@@ -30,7 +30,7 @@ fn main() -> ExitCode {
         }
         Ok(_) => {
             tracing::error!(
-                "live adapters are not implemented yet; use --check-config or cargo test --locked"
+                "full service startup is not wired yet; use --check-config or cargo test --locked"
             );
             ExitCode::FAILURE
         }

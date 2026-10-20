@@ -2,12 +2,12 @@
 
 [Задание](rust-test.pdf): два независимых публичных market-data фида, локальные стаканы и сигнал без исполнения ордеров.
 
-**Статус:** этапы 1–6 реализованы: точные числа, книга с публикацией, robot и wire-модели с fixtures. Сетевые `MDAdapter`, resync и запуск двух фидов — этапы 7–9; live-подключения и задержки ещё не проверены.
+**Статус:** этапы 1–7 реализованы: ядро, robot, протоколы обеих бирж и сетевой Binance с восстановлением. 41 тест, включая локальные WS/HTTP mocks. Aster и общий запуск — этапы 8–9; live-подключения и задержки ещё не проверены.
 [Архитектура](docs/ARCHITECTURE.md) · [План реализации](docs/IMPLEMENTATION_PLAN.md).
 
 ## Проверка текущей версии
 
-Rust 1.98.1 / edition 2024 закреплён в `rust-toolchain.toml`, зависимости — в `Cargo.lock`.
+Rust 1.99.1 / edition 2024 закреплён в `rust-toolchain.toml`, зависимости — в `Cargo.lock`.
 
 ```bash
 cargo run --locked -- --help
@@ -95,7 +95,7 @@ Diff полностью разбирается, сортируется и сли
 
 Цикл постоянно занимает логический CPU; выделение физического ядра и влияние на адаптеры проверяются измерениями. Он проверяет stop-флаг `Arc<AtomicBool>` с `Relaxed`: флаг означает только остановку и не публикует другие данные. Синхронизацией книг управляет triple buffer.
 
-Гейт запускается через `runtime.block_on(gate.run(...))`. `select!` обслуживает WS, HTTP, таймеры и shutdown; HTTP future сохраняется между итерациями. Разбор snapshot — не более одной незавершённой `spawn_blocking`-работы на гейт. Replay выполняется порциями с возвратом к обслуживанию WS. Отдельные tasks на каждый diff не создаются.
+`md::spawn_adapter` запускает `MDAdapter::run` через `block_on` в отдельном OS-потоке с Tokio current-thread. Реализован `binance::BinanceAdapter::default()`. `select!` обслуживает WS, HTTP, таймеры и shutdown; HTTP future сохраняется между итерациями. Разбор snapshot — не более одной незавершённой `spawn_blocking`-работы на гейт. Replay выполняется порциями по 32 сообщения с возвратом к обслуживанию WS. Очередь хранит исходный текст и время получения; старый результат разбора snapshot отбрасывается по `sync_epoch`. Отдельные tasks на каждый diff не создаются.
 
 ### Временные метки
 
@@ -174,7 +174,7 @@ struct Amount(Fp); // USDT
 | Параметр | Значение |
 | --- | --- |
 | Connect/handshake / HTTP timeout | По 10 с |
-| Deadline синхронизации | 15 с |
+| Deadline синхронизации / закрытия WS | 15 с после backoff / 1 с |
 | Запуск расчёта robot | Busy polling обоих буферов, расчёт при обновлении книги или статуса |
 | Контроль свежести | Проверка ближайшего deadline в polling-цикле, даже без обновлений |
 | Периодический вывод решения | 1 с по `Instant`, без догоняющих запусков |
@@ -215,7 +215,7 @@ N >  theta * D → ShortBias              # Aster дороже
 
 Span на соединение: `venue`, `symbol`, `connection_epoch`. Логируем подключения, восстановление, смену статуса, решения и агрегаты ошибок; не каждый тик. `tracing-appender`: `lossy(true)`, `buffered_lines_limit(4096)`; потери — через `ErrorCounter`. Подготовка записи выполняется вызывающим потоком, запись — отдельным writer.
 
-`FeedMetrics` передаётся supervision через отдельный предвыделенный triple buffer, выводится раз в секунду. Содержит состояние/epoch/последнюю ошибку, received frames, applied diffs, snapshots, gaps, resyncs, overflows, decode errors, coverage lost, duplicates, reconnects и возраст данных. Счётчики сохраняются между reconnect/resync. Отдельно считаем пропуски публикаций и потери логов.
+`FeedMetrics` передаётся supervision через отдельный предвыделенный triple buffer, выводится раз в секунду. Содержит состояние/epoch/последнюю ошибку, received frames, applied diffs, snapshots, stale snapshots, gaps, resyncs, overflows, decode errors, coverage lost, duplicates, reconnects и возраст данных. Счётчики сохраняются между reconnect/resync. Отдельно считаем пропуски публикаций и потери логов.
 
 ## Структура и проверка реализации
 

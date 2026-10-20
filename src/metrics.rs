@@ -15,6 +15,7 @@ pub enum FeedState {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedFault {
+    Http,
     Gap,
     Disconnect,
     Decode,
@@ -32,6 +33,7 @@ pub struct FeedMetrics {
     pub frames: u64,
     pub applied_diffs: u64,
     pub snapshots: u64,
+    pub stale_snapshots: u64,
     pub gaps: u64,
     pub resyncs: u64,
     pub overflows: u64,

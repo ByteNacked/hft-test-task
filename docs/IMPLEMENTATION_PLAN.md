@@ -1,6 +1,6 @@
 # План реализации
 
-Этапы **1–6 реализованы**. Этапы 7–11 ещё не начаты. [README](../README.md) содержит стек, формулы и параметры; [архитектура](ARCHITECTURE.md) — потоки и владение данными.
+Этапы **1–7 реализованы**. Этапы 8–11 ещё не начаты. [README](../README.md) содержит стек, формулы и параметры; [архитектура](ARCHITECTURE.md) — потоки и владение данными.
 
 ## Зафиксированные решения
 
@@ -95,9 +95,9 @@
 
 **Готово:** обе модели проходят корректные и повреждённые fixtures без сети, включая превышение лимитов.
 
-## Этап 7. MDAdapter и Binance
+## Этап 7. MDAdapter и Binance — готово
 
-**Файлы:** `md.rs`, `binance.rs`, WS/HTTP mocks.
+**Файлы:** `md/adapter.rs`, `md/sync.rs`, `binance/adapter.rs` и локальные WS/HTTP mocks.
 
 - Определить минимальный `MDAdapter` со статической диспетчеризацией. Запускать корневую future через `block_on` внутри потока гейта.
 - Через `select!` обслуживать WS, HTTP, разбор snapshot, таймеры и shutdown. Сохранять HTTP future между итерациями; проверить cancellation safety операций.
@@ -166,9 +166,9 @@ Deadline робота проверять с управляемым времен�
 
 **Готово:** воспроизводимый release replay и отчёт с фактическими измерениями.
 
-## Проверка этапов 1–6
+## Проверка этапов 1–7
 
-28 unit/integration/property-тестов: точность и логирование ошибок, merge против `BTreeMap`, rollback обеих сторон, три предвыделенных слота и конкурентный читатель, polling/deadline/stop, обе схемы и лимиты. Fixtures синтетические; [источники](../tests/fixtures/README.md). TLS provider — AWS-LC; сетевой handshake ещё не проверен.
+41 unit/integration/property-тест: точность и логирование ошибок, merge против `BTreeMap`, rollback обеих сторон, три предвыделенных слота и конкурентный читатель, polling/deadline/stop, обе схемы и лимиты; bridge/gap/дубли, задержанный HTTP и старый parse worker, Close/EOF, malformed/oversized сообщения, overflow очереди, таймауты, Ping/Pong, Retry-After и shutdown. Fixtures синтетические; [источники](../tests/fixtures/README.md). TLS provider — AWS-LC; проверен локальный WS handshake без TLS; public TLS/live smoke ещё не выполнен.
 
 Команды: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --release --locked`. Live smoke и измерения относятся к последующим этапам.
 
@@ -186,7 +186,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-В конце — `cargo build --release --locked`, `cargo bench --locked` и release replay. Сетевые тесты запускаются отдельно.
+В конце — `cargo build --release --locked`, `cargo bench --locked` и release replay. Локальные WS/HTTP mocks входят в `cargo test` и требуют loopback-сокетов; public smoke запускается отдельно.
 
 - [ ] Два независимых snapshot + diff гейта, все известные уровни сохранены.
 - [ ] Только `Online/Offline`; `Offline` публикуется до ожидания восстановления.

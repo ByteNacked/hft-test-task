@@ -1,9 +1,11 @@
-//! Binance wire schema. Transport, sequence synchronization and recovery are stage 7/8.
+//! Binance USD-M wire schema and snapshot/diff adapter.
+mod adapter;
 use crate::{
     config,
     md::{self, DepthDiff, EventTime, ProtocolError, ReceiveTime, Snapshot},
     numeric::InstrumentRules,
 };
+pub use adapter::BinanceAdapter;
 use serde::Deserialize;
 
 pub const WS_URL: &str = "wss://fstream.binance.com/public/stream?streams=ethusdt@depth@100ms";

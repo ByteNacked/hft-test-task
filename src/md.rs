@@ -1,9 +1,13 @@
-//! Transport-independent normalized data. The async MDAdapter contract arrives in stage 7.
+//! Market-data adapter contract and transport-independent normalized data.
+mod adapter;
+pub(crate) mod sync;
 use crate::{
     book::{BookError, DiffSide, SnapshotSide, prepare},
     config,
     numeric::{InstrumentRules, Price, Qty},
 };
+pub use adapter::{AdapterError, MDAdapter, spawn_adapter};
+pub(crate) use adapter::{Backoff, get_body, shutdown_requested};
 use serde::Deserialize;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
