@@ -1,0 +1,25 @@
+{
+  "futuresType": "U_MARGINED",
+  "symbols": [
+    {
+      "symbol": "ETHUSDT",
+      "status": "TRADING",
+      "contractType": "PERPETUAL",
+      "baseAsset": "ETH",
+      "quoteAsset": "USDT",
+      "marginAsset": "USDT",
+      "pricePrecision": 2,
+      "quantityPrecision": 3,
+      "filters": [
+        {
+          "filterType": "PRICE_FILTER",
+          "tickSize": "0.05"
+        },
+        {
+          "filterType": "LOT_SIZE",
+          "stepSize": "0.001"
+        }
+      ]
+    }
+  ]
+}

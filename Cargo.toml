@@ -1,0 +1,32 @@
+[package]
+name = "hft-test-task"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "net", "time", "macros", "signal", "sync"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", features = ["sink"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+arrayvec = { version = "0.7", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+fixnum = { version = "=0.9.5", default-features = false, features = ["std", "i64"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+thiserror = "2"
+triple_buffer = "9"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+[dev-dependencies]
+proptest = "1"
+rust_decimal = { version = "1", default-features = false, features = ["std"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+debug = 1

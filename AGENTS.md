@@ -14,7 +14,9 @@ This project is an HFT system written in Rust. Priorities: correctness, predicta
 
 ## Validation
 
-- Test edge cases, invalid input, and trading logic invariants.
+- Keep only tests that verify meaningful project behavior, domain invariants, failure handling, or concrete regressions.
+- Do not add tests that merely check getters/setters, assignments, dependency constructors, framework-generated help, or duplicate existing coverage. Avoid tests that mirror implementation details or manufacture unreachable states solely for coverage.
+- Test edge cases, invalid input, and trading logic invariants; prefer observable outcomes through public APIs.
 - Once a Cargo project exists, run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
 - Validate optimizations with release builds: compare p50/p99/p99.9 latency and throughput under the same workload and environment.
 - Briefly report changes, checks performed, and limitations; do not claim speedups without measurements.

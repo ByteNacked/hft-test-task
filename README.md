@@ -2,8 +2,20 @@
 
 [Задание](rust-test.pdf): два независимых публичных market-data фида, локальные стаканы и сигнал без исполнения ордеров.
 
-**Статус:** проектирование; Cargo-проект ещё не создан. Совместимость сборки и подключения предстоит проверить.
+**Статус:** этапы 1–6 реализованы: точные числа, книга с публикацией, robot и wire-модели с fixtures. Сетевые `MDAdapter`, resync и запуск двух фидов — этапы 7–9; live-подключения и задержки ещё не проверены.
 [Архитектура](docs/ARCHITECTURE.md) · [План реализации](docs/IMPLEMENTATION_PLAN.md).
+
+## Проверка текущей версии
+
+Rust 1.98.1 / edition 2024 закреплён в `rust-toolchain.toml`, зависимости — в `Cargo.lock`.
+
+```bash
+cargo run --locked -- --help
+cargo run --locked -- --check-config
+cargo test --locked
+```
+
+CLI проверяет параметры сигнала (`--max-age-ms`, `--max-skew-ms`, `--min-depth-qty`, `--threshold-bps`). Запуск без `--check-config` пока завершается с явной ошибкой: сетевой сервис ещё не подключён.
 
 ## Основные решения
 
@@ -23,7 +35,7 @@
 | Metadata | `https://fapi.binance.com/fapi/v1/exchangeInfo` | `https://fapi.asterdex.com/fapi/v3/exchangeInfo` |
 | Snapshot | `https://fapi.binance.com/fapi/v1/depth?symbol=ETHUSDT&limit=1000` | `https://fapi.asterdex.com/fapi/v3/depth?symbol=ETHUSDT&limit=1000` |
 
-Документация: [Binance WS `/public`](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice), [синхронизация Binance](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/How-to-manage-a-local-order-book-correctly), [Aster Futures V3](https://github.com/asterdex/api-docs/blob/master/V3%28Recommended%29/EN/aster-finance-futures-api-v3.md#websocket-market-streams).
+Документация: [Binance WS `/public`](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/public#diff-book-depth-streams), [синхронизация Binance](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/How-to-manage-a-local-order-book-correctly), [Aster Futures V3](https://github.com/asterdex/api-docs/blob/master/V3%28Recommended%29/EN/aster-finance-futures-api-v3.md#websocket-market-streams).
 
 При старте проверяем символ, торговый статус, тип контракта, единицы, `PRICE_FILTER.tickSize` и `LOT_SIZE.stepSize`. `pricePrecision`/`quantityPrecision` не заменяют шаги. Несовместимые metadata останавливают инициализацию; контрактный множитель требует нормализации объёма в ETH.
 
@@ -46,7 +58,7 @@ Snapshot ограничен 1000 уровнями на сторону: даль�
 
 ## Библиотеки
 
-При создании проекта фиксируем toolchain и `Cargo.lock`, проверяем MSRV и собираем с `--locked`.
+Сборка проверяется закреплённым toolchain с `--locked`. Tokio/HTTP/WS уже включены; `fastrand`, `hdrhistogram` и `criterion` подключаются на этапах recovery и измерений.
 
 | Слой | Библиотека | Настройка |
 | --- | --- | --- |
@@ -54,8 +66,8 @@ Snapshot ограничен 1000 уровнями на сторону: даль�
 | WS | [`tokio-tungstenite` 0.30.x](https://docs.rs/tokio-tungstenite/latest/tokio_tungstenite/) | Без default features; `connect`, `rustls-tls-webpki-roots` |
 | Stream/Sink | [`futures-util` 0.3.x](https://docs.rs/futures-util/latest/futures_util/) | Feature `sink` |
 | HTTPS | [`reqwest` 0.13.x](https://docs.rs/reqwest/latest/reqwest/) | Без default features; `rustls`, `json`; переиспользуемый `Client` |
-| TLS | `rustls` через клиентов | Проверка сертификатов/hostname, совместимый crypto provider |
-| JSON | [`serde` 1.x](https://serde.rs/) + [`serde_json` 1.x](https://docs.rs/serde_json/latest/serde_json/) | `derive`, типизированные модели и числовые visitors |
+| TLS | `rustls` через клиентов | Общий AWS-LC provider; HTTPS — системный verifier, WSS — WebPKI roots |
+| JSON | [`serde` 1.x](https://serde.rs/) + [`serde_json` 1.x](https://docs.rs/serde_json/latest/serde_json/) | `derive`, `raw_value`, типизированные модели и числовые visitors |
 | Книга / sync-очередь | `Vec` / `VecDeque` | Предвыделение и явные лимиты |
 | Diff | [`arrayvec` 0.7.x](https://docs.rs/arrayvec/latest/arrayvec/) | `serde`; ограниченные массивы изменений |
 | Публикация | [`triple_buffer` 9.x](https://docs.rs/triple_buffer/latest/triple_buffer/) | По SPSC-каналу последнего состояния на биржу |
@@ -120,12 +132,12 @@ struct Amount(Fp); // USDT
 
 ### Политика арифметики
 
-**Не округляем входные значения и результаты операций.** Если точное представление невозможно, возвращаем `PrecisionLoss` и явно пишем ошибку через `tracing::error!` с контекстом операции. Ошибка входных данных переводит книгу в `Offline` и запускает resync; ошибка расчёта даёт `Hold(NumericError)`. Запись выполняет отдельный writer.
+**Не округляем входные значения и результаты операций.** Если точное представление невозможно, возвращаем `PrecisionLoss` и явно пишем ошибку через `tracing::error!` с контекстом операции. Ошибка входных данных переводит книгу в `Offline` и запускает resync; ошибка расчёта даёт `Hold`. Запись выполняет отдельный writer.
 
 - Вход: ограниченная ASCII-строка `digits[.digits]`, без знаков, пробелов и экспоненты. Хвостовые нули дробной части убираются срезом перед `from_str_exact`; ненулевая точность сверх девяти разрядов отклоняется. Через `f64` не преобразуем.
 - Сложение/вычитание — `cadd/csub`, умножение на целое — `cmul`. Перед `rmul/rdiv` проверяем точную представимость результата через checked `i128` и остаток деления с учётом масштаба. Ненулевой остаток — `PrecisionLoss`; округлённый результат не используется.
 - Доменные операции: `Qty + Qty → Qty`, `Amount ± Amount → Amount`, `Price × Qty → Amount`. Ошибка диапазона или отрицательный результат не маскируются wrapping/saturating арифметикой.
-- Агрегаты и сравнение порогов — raw-значения, расширенные до checked `i128`; масштаб суммы `10^9`, произведения `10^18`. Ошибка расчёта даёт `Hold(NumericError)`.
+- Агрегаты и сравнение порогов — raw-значения, расширенные до checked `i128`; масштаб суммы `10^9`, произведения `10^18`. Ошибка расчёта даёт `Hold`.
 - Отклонение bps выводим точной дробью `N/D`, без округления. `rust_decimal` служит эталоном только в тестах.
 
 [Представление и операции fixnum](https://docs.rs/fixnum/latest/fixnum/) · [точный парсер](https://docs.rs/fixnum/latest/src/fixnum/string.rs.html).
@@ -134,7 +146,7 @@ struct Amount(Fp); // USDT
 
 Горячий путь: WS frame → parse → sequence check → merge → publish. Без REST, файлового I/O, общей блокировки книги и покадрового логирования.
 
-Отдельные модели Binance/Aster проверяют wrapper, символ, событие, `U/u/pu` и числа. Используем visitors без `serde_json::Value`. Bids сортируются по убыванию, asks — по возрастанию; `sort_unstable` не требует heap-буфера. Дубликаты цены в payload отклоняются. После целого diff проверяем порядок, вместимость и `best_bid < best_ask`.
+Отдельные модели Binance/Aster проверяют wrapper, символ, событие, `U/u/pu` и числа. Binance также проверяет `st`/`ps`, если они присутствуют. Массивы уровней заполняются на месте через serde seed; metadata ограничены 4096 инструментами и 32 фильтрами на выбранный инструмент. Используем visitors без `serde_json::Value`. Bids сортируются по убыванию, asks — по возрастанию; `sort_unstable` не требует heap-буфера. Дубликаты цены в payload отклоняются. После целого diff проверяем порядок, вместимость и `best_bid < best_ask`.
 
 | Ресурс | Лимит |
 | --- | --- |
@@ -177,9 +189,9 @@ Ping/Pong/flush обслуживаются постоянно, HTTP 429 учит
 
 ## Сигнал первой версии
 
-`robot::evaluate(&BookView, &BookView, &SignalConfig, now) -> Decision` читает только `store`. Направление задаётся относительно Aster, Binance — ориентир.
+`robot::evaluate(&BookView, &BookView, &RobotConfig, now) -> Decision` читает только опубликованные `book::BookView`. Направление задаётся относительно Aster, Binance — ориентир.
 
-Условия расчёта: обе книги `Online`, свежие, с допустимым skew и пятью достоверными уровнями каждой стороны. Каждая из четырёх сумм top-5 bids/asks должна быть ≥ `min_depth_qty`, исходно 1 ETH. Иначе — `Hold` с причиной.
+Условия расчёта: обе книги `Online`, свежие, с допустимым skew и пятью достоверными уровнями каждой стороны. Каждая из четырёх сумм top-5 bids/asks должна быть ≥ `min_depth_qty`, исходно 1 ETH. Иначе — `Hold`.
 
 ```text
 mid2_A = bid_A + ask_A
@@ -193,11 +205,11 @@ N >  theta * D → ShortBias              # Aster дороже
 
 Порог `theta = 5` bps. Сравнения — checked `i128` без деления; `N / D` используется для отображения. Это исследовательский сигнал без оценки комиссий, funding и исполнения.
 
-`Decision`: направление, причина, статусы/sequence, bid/ask, mid, объёмы, `exchange_time`, `platform_time` и возраст обеих книг, skew, отклонение и порог. Причины: `BookOffline`, `StaleFeed`, `TimeSkew`, `InsufficientDepth`, `WithinThreshold`, `AsterCheaper`, `AsterDearer`, `NumericError`. Отсутствующие данные — `None`; сохранённые данные `Offline` не участвуют в расчёте.
+`Decision`: направление, статусы/sequence, bid/ask, mid, объёмы, `exchange_time`, `platform_time` и возраст обеих книг, skew, отклонение и порог. Без отдельных классификаций причины и площадки сбоя: робот получает только `Online/Offline` и числа книг. Отсутствующие данные — `None`; сохранённые данные `Offline` не участвуют в расчёте. Если проверки не пройдены, результат — `Hold`, отклонение — `None`.
 
-Первый расчёт выполняется при запуске. Далее polling-цикл проверяет оба буфера, stop-флаг и deadline по `Instant`. `evaluate` вызывается при новой публикации, превышении max-age или наступлении срока секундного вывода. Публикация во время расчёта подхватывается на следующем проходе. Обработанный deadline свежести исключается до нового состояния книги: устаревание даёт `Hold(StaleFeed)`, но не запускает расчёт на каждой пустой итерации.
+Первый расчёт выполняется при запуске. Далее polling-цикл проверяет оба буфера, stop-флаг и deadline по `Instant`. `evaluate` вызывается при новой публикации, превышении max-age или наступлении срока секундного вывода. Публикация во время расчёта подхватывается на следующем проходе. Обработанный deadline свежести исключается до нового состояния книги: устаревание даёт `Hold`, но не запускает расчёт на каждой пустой итерации.
 
-Вывод — при изменении класса/причины и раз в секунду, включая `Hold`. Искусственной паузы между проверками нет; задержка включает применение diff, копирование книги, доступ к кешу, планирование OS и расчёт. Выигрыш busy polling подтверждается replay.
+Вывод — при изменении направления или статуса любой книги и раз в секунду, включая `Hold`. Искусственной паузы между проверками нет; задержка включает применение diff, копирование книги, доступ к кешу, планирование OS и расчёт. Выигрыш busy polling подтверждается replay.
 
 ## Трассировка и статистика
 
@@ -211,16 +223,15 @@ Span на соединение: `venue`, `symbol`, `connection_epoch`. Логи�
 | --- | --- |
 | `main`, `config` | CLI, запуск, supervision, shutdown, проверенные параметры |
 | `numeric` | `Fp`, newtype, парсинг и арифметика |
-| `book` | Diff-книга, merge, покрытие |
-| `store` | `BookView`, статусы и публикация |
+| `book` | Diff-книга, merge, покрытие, `BookView`, статусы и публикация |
 | `md` | Трейт `MDAdapter`, внутренние состояния и ошибки |
 | `binance`, `aster` | Модули первого уровня: WS/REST, синхронизация, reconnect |
-| `robot` | Чтение store, свежесть и решение |
+| `robot` | Чтение опубликованной книги, свежесть и решение |
 | `metrics` | Счётчики и tracing |
 
 `MDAdapter` получает данные, публикует книгу/статус, восстанавливается и останавливается. `lib.rs` экспортирует модули для `tests/` и `benches/`; `main.rs` запускает сервис.
 
-Проверяем числа и overflow, merge против `BTreeMap`, отсутствие частичного commit, snapshot bridge/gaps/повторы, поздние ответы, лимиты, независимость фидов, медленного читателя, статусы и shutdown. Для сигнала — пороги, freshness/skew, объём и причины `Hold`. Сценарии перечислены в [плане](docs/IMPLEMENTATION_PLAN.md).
+Проверяем числа и overflow, merge против `BTreeMap`, отсутствие частичного commit, snapshot bridge/gaps/повторы, поздние ответы, лимиты, независимость фидов, медленного читателя, статусы и shutdown. Для сигнала — пороги, freshness/skew, объём и условия `Hold`. Сценарии перечислены в [плане](docs/IMPLEMENTATION_PLAN.md).
 
 ```bash
 cargo fmt --check
@@ -230,4 +241,4 @@ cargo build --release --locked
 cargo bench --locked
 ```
 
-Release replay измеряет `frame_received → book_published`, `book_published → signal_decision` и полный путь, p50/p99/p99.9, throughput, аллокации и загрузку CPU робота/адаптеров. Нагрузка подаётся независимо от скорости читателя; отдельно учитываются пропуски публикаций, steady state и resync. В отчёте — CPU/OS, affinity, compiler, lockfile, параметры, длительность и размер выборки. Busy polling сравнивается с вариантом на `Notify` в benchmark при одинаковом workload; измерений пока нет.
+Release replay измеряет `frame_received → book_published`, `book_published → robot_decision` и полный путь, p50/p99/p99.9, throughput, аллокации и загрузку CPU робота/адаптеров. Нагрузка подаётся независимо от скорости читателя; отдельно учитываются пропуски публикаций, steady state и resync. В отчёте — CPU/OS, affinity, compiler, lockfile, параметры, длительность и размер выборки. Busy polling сравнивается с вариантом на `Notify` в benchmark при одинаковом workload; измерений пока нет.
