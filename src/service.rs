@@ -3,7 +3,6 @@ use crate::{
     book,
     config::{self, RobotConfig},
     md::{self, AdapterError, MDAdapter},
-    metrics::{self, RobotMetrics},
     robot::{Decision, Robot},
 };
 use std::{
@@ -92,28 +91,22 @@ pub async fn run(
     aster: impl MDAdapter,
     shutdown: impl Future<Output = std::io::Result<()>>,
     report: impl FnMut(&Decision) + Send + 'static,
-    dropped_logs: impl Fn() -> usize,
 ) -> Result<(), ServiceError> {
     let (bw, br) = book::channel(config::BOOK_LEVELS)?;
     let (aw, ar) = book::channel(config::BOOK_LEVELS)?;
-    let (bm, mut binance_metrics) = metrics::channel();
-    let (am, mut aster_metrics) = metrics::channel();
-    let (rm, mut robot_metrics) = triple_buffer::TripleBuffer::<RobotMetrics>::default().split();
     let (stop_feeds, shutdown_feeds) = watch::channel(false);
     let stop_robot = Arc::new(AtomicBool::new(false));
     let mut workers = Workers::default();
     // Preserve ownership of every started worker if a later thread cannot be spawned.
     let startup = (|| -> Result<(), ServiceError> {
-        workers.robot =
-            Some(Robot::new(br, ar, robot_config).spawn(stop_robot.clone(), rm, report)?);
+        workers.robot = Some(Robot::new(br, ar, robot_config).spawn(stop_robot.clone(), report)?);
         workers.feeds[0] = Some(md::spawn_adapter(
             "binance",
             binance,
             bw,
-            bm,
             shutdown_feeds.clone(),
         )?);
-        workers.feeds[1] = Some(md::spawn_adapter("aster", aster, aw, am, shutdown_feeds)?);
+        workers.feeds[1] = Some(md::spawn_adapter("aster", aster, aw, shutdown_feeds)?);
         Ok(())
     })();
     let mut failure = startup.err();
@@ -124,8 +117,6 @@ pub async fn run(
     }
     let mut checks = interval(config::SUPERVISION_INTERVAL);
     checks.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut reports = interval(config::REPORT_INTERVAL);
-    reports.set_missed_tick_behavior(MissedTickBehavior::Skip);
     tokio::pin!(shutdown);
     loop {
         if let Some(error) = workers.reap(stopping) {
@@ -149,26 +140,9 @@ pub async fn run(
                 tracing::debug!("shutdown requested");
             }
             _=checks.tick() => {},
-            _=reports.tick() => {
-                metrics::report_feed("binance",&mut binance_metrics);
-                metrics::report_feed("aster",&mut aster_metrics);
-                robot_metrics.update();
-                tracing::debug!(
-                    binance_skipped_publications=robot_metrics.output_buffer().binance_skipped_publications,
-                    aster_skipped_publications=robot_metrics.output_buffer().aster_skipped_publications,
-                    dropped_logs=dropped_logs(), "service metrics");
-            }
         }
     }
-    metrics::report_feed("binance", &mut binance_metrics);
-    metrics::report_feed("aster", &mut aster_metrics);
-    robot_metrics.update();
-    tracing::debug!(
-        binance_skipped_publications = robot_metrics.output_buffer().binance_skipped_publications,
-        aster_skipped_publications = robot_metrics.output_buffer().aster_skipped_publications,
-        dropped_logs = dropped_logs(),
-        "service stopped"
-    );
+    tracing::debug!("service stopped");
     failure.map_or(Ok(()), Err)
 }
 

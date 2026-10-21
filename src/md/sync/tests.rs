@@ -18,8 +18,8 @@ fn event(now: Instant, first: u64, last: u64, previous: u64, quantity: i64) -> D
 fn snapshot_bridge_is_inclusive_and_futures_ids_need_not_be_adjacent() {
     let now = Instant::now();
     for (first, last) in [(99, 100), (100, 100), (100, 102), (99, 102)] {
-        let mut synced = SyncedBook::new(rules()).unwrap();
-        synced.load(&mut snapshot(100, SCALE, 6)).unwrap();
+        let mut synced = SyncedBook::new().unwrap();
+        synced.load(&snapshot(100, SCALE, 6)).unwrap();
         assert_eq!(
             synced.apply(event(now, 98, 99, 97, 2 * SCALE)).unwrap(),
             Applied::BeforeSnapshot
@@ -41,8 +41,8 @@ fn snapshot_bridge_is_inclusive_and_futures_ids_need_not_be_adjacent() {
 #[test]
 fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
     let now = Instant::now();
-    let mut synced = SyncedBook::new(rules()).unwrap();
-    synced.load(&mut snapshot(100, SCALE, 6)).unwrap();
+    let mut synced = SyncedBook::new().unwrap();
+    synced.load(&snapshot(100, SCALE, 6)).unwrap();
     synced.apply(event(now, 100, 102, 99, 2 * SCALE)).unwrap();
     assert_eq!(
         synced
@@ -70,7 +70,7 @@ fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
         Err(AdapterError::Sequence(_))
     ));
     synced.reset();
-    synced.load(&mut snapshot(100, SCALE, 6)).unwrap();
+    synced.load(&snapshot(100, SCALE, 6)).unwrap();
     assert!(matches!(
         synced.apply(event(now, 101, 102, 100, SCALE)),
         Err(AdapterError::Sequence(_))

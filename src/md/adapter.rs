@@ -1,8 +1,8 @@
 use crate::{
     book::{BookError, BookPublisher},
     config,
-    md::ProtocolError,
-    metrics::FeedMetrics,
+    md::{DepthDiff, ProtocolError, ReceiveTime, Snapshot},
+    numeric::InstrumentRules,
 };
 use std::{
     future::Future,
@@ -10,7 +10,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::sync::watch;
-use triple_buffer::Input;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
@@ -62,11 +61,21 @@ impl AdapterError {
     }
 }
 
-pub trait MDAdapter: Send + 'static {
+pub trait MDAdapter: Send + Sized + 'static {
+    const NAME: &'static str;
+    const WS_URL: &'static str;
+    const METADATA_URL: &'static str;
+    const SNAPSHOT_URL: &'static str;
+    fn decode_metadata(body: &[u8]) -> Result<InstrumentRules, ProtocolError>;
+    fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError>;
+    fn decode_diff(
+        body: &[u8],
+        received: ReceiveTime,
+        rules: InstrumentRules,
+    ) -> Result<DepthDiff, ProtocolError>;
     fn run(
         self,
         books: BookPublisher,
-        metrics: Input<FeedMetrics>,
         shutdown: watch::Receiver<bool>,
     ) -> impl Future<Output = Result<(), AdapterError>> + Send;
 }
@@ -77,7 +86,6 @@ pub fn spawn_adapter<A: MDAdapter>(
     name: &str,
     adapter: A,
     books: BookPublisher,
-    metrics: Input<FeedMetrics>,
     shutdown: watch::Receiver<bool>,
 ) -> std::io::Result<thread::JoinHandle<Result<(), AdapterError>>> {
     thread::Builder::new().name(name.to_owned()).spawn(move || {
@@ -85,7 +93,7 @@ pub fn spawn_adapter<A: MDAdapter>(
             .enable_all()
             .max_blocking_threads(1)
             .build()?;
-        runtime.block_on(Box::pin(adapter.run(books, metrics, shutdown)))
+        runtime.block_on(Box::pin(adapter.run(books, shutdown)))
     })
 }
 

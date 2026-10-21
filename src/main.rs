@@ -1,9 +1,9 @@
 use clap::Parser;
-use hft_test_task::{aster::AsterAdapter, binance::BinanceAdapter, config::Cli, metrics, service};
+use hft_test_task::{aster::AsterAdapter, binance::BinanceAdapter, config::Cli, logging, service};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let (_log_guard, log_errors) = metrics::init_logging();
+    let _log_guard = logging::init_logging();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -44,8 +44,7 @@ fn main() -> ExitCode {
                             BinanceAdapter::default(),
                             AsterAdapter::default(),
                             shutdown,
-                            metrics::decision_reporter(),
-                            || log_errors.dropped_lines(),
+                            logging::decision_reporter(),
                         )
                         .await
                     })

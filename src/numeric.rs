@@ -1,7 +1,7 @@
 //! Decimal fixed point: raw / 10^9. No operation silently rounds.
 use std::{fmt, str::FromStr};
 
-use fixnum::{FixedPoint, ops::*, typenum::U9};
+use fixnum::{FixedPoint, typenum::U9};
 use serde::{Deserialize, Deserializer, de};
 use thiserror::Error;
 
@@ -21,8 +21,6 @@ pub enum NumericError {
     Domain,
     #[error("value is not a multiple of the instrument step")]
     InvalidStep,
-    #[error("division by zero")]
-    DivisionByZero,
 }
 
 fn precision_loss(operation: &'static str) -> NumericError {
@@ -77,10 +75,6 @@ macro_rules! quantity {
                     Ok(())
                 }
             }
-            pub fn checked_mul_integer(self, rhs: i64) -> Result<Self, NumericError> {
-                let value = self.0.cmul(rhs).map_err(|_| NumericError::Overflow)?;
-                Self::from_raw(value.into_bits())
-            }
         }
         impl FromStr for $name {
             type Err = NumericError;
@@ -112,71 +106,9 @@ macro_rules! quantity {
 }
 quantity!(Price, true);
 quantity!(Qty, false);
-quantity!(Amount, false);
-
 impl Qty {
     pub const ZERO: Self = Self(Fp::from_bits(0));
     pub const ONE: Self = Self(Fp::from_bits(SCALE));
-    pub fn checked_add(self, rhs: Self) -> Result<Self, NumericError> {
-        self.0
-            .cadd(rhs.0)
-            .map(Self)
-            .map_err(|_| NumericError::Overflow)
-    }
-}
-impl Amount {
-    pub const ZERO: Self = Self(Fp::from_bits(0));
-    pub const ONE: Self = Self(Fp::from_bits(SCALE));
-    pub fn checked_add(self, rhs: Self) -> Result<Self, NumericError> {
-        self.0
-            .cadd(rhs.0)
-            .map(Self)
-            .map_err(|_| NumericError::Overflow)
-    }
-    pub fn checked_sub(self, rhs: Self) -> Result<Self, NumericError> {
-        let value = self.0.csub(rhs.0).map_err(|_| NumericError::Overflow)?;
-        Self::from_raw(value.into_bits())
-    }
-    pub fn checked_div_price(self, rhs: Price) -> Result<Qty, NumericError> {
-        exact_quotient(
-            i128::from(self.raw()),
-            i128::from(rhs.raw()),
-            "amount / price",
-        )
-        .and_then(Qty::from_raw)
-    }
-}
-impl Price {
-    pub fn checked_mul_qty(self, rhs: Qty) -> Result<Amount, NumericError> {
-        let product = i128::from(self.raw())
-            .checked_mul(i128::from(rhs.raw()))
-            .ok_or(NumericError::Overflow)?;
-        if product % i128::from(SCALE) != 0 {
-            return Err(precision_loss("price * qty"));
-        }
-        // Exactness was checked above; fixnum's rounding mode cannot change this result.
-        let value = self
-            .0
-            .rmul(rhs.0, RoundMode::Floor)
-            .map_err(|_| NumericError::Overflow)?;
-        Amount::from_raw(value.into_bits())
-    }
-}
-
-/// Exact scaled division, also used by tests at i128 boundaries.
-pub fn exact_quotient(lhs: i128, rhs: i128, operation: &'static str) -> Result<i64, NumericError> {
-    if rhs == 0 {
-        return Err(NumericError::DivisionByZero);
-    }
-    let numerator = lhs
-        .checked_mul(i128::from(SCALE))
-        .ok_or(NumericError::Overflow)?;
-    let remainder = numerator.checked_rem(rhs).ok_or(NumericError::Overflow)?;
-    if remainder != 0 {
-        return Err(precision_loss(operation));
-    }
-    let quotient = numerator.checked_div(rhs).ok_or(NumericError::Overflow)?;
-    i64::try_from(quotient).map_err(|_| NumericError::Overflow)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,12 +125,6 @@ impl InstrumentRules {
             tick_size,
             lot_size,
         })
-    }
-    pub fn tick_size(self) -> Price {
-        self.tick_size
-    }
-    pub fn lot_size(self) -> Qty {
-        self.lot_size
     }
     pub fn validate(self, price: Price, qty: Qty) -> Result<(), NumericError> {
         price.check_step(self.tick_size)?;

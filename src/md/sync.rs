@@ -2,7 +2,6 @@
 use crate::{
     book::OrderBook,
     md::{AdapterError, DepthDiff, Snapshot},
-    numeric::InstrumentRules,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -18,9 +17,9 @@ pub(crate) struct SyncedBook {
     last: Option<DepthDiff>,
 }
 impl SyncedBook {
-    pub(crate) fn new(rules: InstrumentRules) -> Result<Self, AdapterError> {
+    pub(crate) fn new() -> Result<Self, AdapterError> {
         Ok(Self {
-            book: OrderBook::new(rules, crate::config::BOOK_LEVELS)?,
+            book: OrderBook::new(crate::config::BOOK_LEVELS)?,
             snapshot_id: None,
             last: None,
         })
@@ -29,7 +28,7 @@ impl SyncedBook {
         self.snapshot_id = None;
         self.last = None;
     }
-    pub(crate) fn load(&mut self, snapshot: &mut Snapshot) -> Result<(), AdapterError> {
+    pub(crate) fn load(&mut self, snapshot: &Snapshot) -> Result<(), AdapterError> {
         self.book.load_snapshot(snapshot)?;
         self.snapshot_id = Some(snapshot.last_update_id);
         self.last = None;
@@ -41,7 +40,7 @@ impl SyncedBook {
     pub(crate) fn has_snapshot(&self) -> bool {
         self.snapshot_id.is_some()
     }
-    pub(crate) fn apply(&mut self, mut diff: DepthDiff) -> Result<Applied, AdapterError> {
+    pub(crate) fn apply(&mut self, diff: DepthDiff) -> Result<Applied, AdapterError> {
         if let Some(last) = &self.last {
             if diff.final_id == last.final_id {
                 // Local receive timestamps differ on retransmission. Exchange time and
@@ -73,7 +72,7 @@ impl SyncedBook {
                 return Err(AdapterError::Sequence("snapshot bridge missing"));
             }
         }
-        self.book.apply_diff(&mut diff)?;
+        self.book.apply_diff(&diff)?;
         self.last = Some(diff);
         Ok(Applied::Update)
     }

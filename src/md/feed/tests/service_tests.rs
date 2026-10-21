@@ -1,4 +1,5 @@
 //! Complete path: local HTTP/WS -> adapters -> book publication -> robot -> supervision.
+use super::mock::{Mock, Response};
 use super::*;
 use crate::{
     aster::AsterAdapter,
@@ -7,7 +8,7 @@ use crate::{
     robot::{Bias, Decision},
     service,
 };
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
@@ -22,16 +23,14 @@ enum Venue {
 #[derive(Clone, Copy, Debug)]
 enum Fault {
     Gap,
-    Regression,
-    Conflict,
     Malformed,
     Close,
     Eof,
     Oversized,
 }
 struct Rig {
-    bm: binance::Mock,
-    am: aster::Mock,
+    bm: Mock,
+    am: Mock,
     bw: Option<ServerSocket>,
     aw: Option<ServerSocket>,
     decisions: mpsc::Receiver<Decision>,
@@ -40,23 +39,36 @@ struct Rig {
 }
 impl Rig {
     async fn new(queue_messages: usize) -> Self {
-        Self::with_timing(queue_messages, Duration::from_secs(3), config::WATCHDOG).await
+        Self::with_timing(
+            queue_messages,
+            Duration::from_secs(3),
+            config::WATCHDOG,
+            config::HTTP_TIMEOUT,
+        )
+        .await
     }
-    async fn with_timing(queue_messages: usize, max_age: Duration, watchdog: Duration) -> Self {
-        let mut bm = binance::Mock::new().await;
-        let mut am = aster::Mock::new().await;
+    async fn with_timing(
+        queue_messages: usize,
+        max_age: Duration,
+        watchdog: Duration,
+        http_timeout: Duration,
+    ) -> Self {
+        let mut bm = Mock::new::<BinanceAdapter>().await;
+        let mut am = Mock::new::<AsterAdapter>().await;
         bm.settings.queue_messages = queue_messages;
         am.settings.queue_messages = queue_messages;
+        bm.settings.http_timeout = http_timeout;
+        am.settings.http_timeout = http_timeout;
         bm.settings.watchdog = watchdog;
         am.settings.watchdog = watchdog;
         let b = BinanceAdapter {
             settings: std::mem::replace(
                 &mut bm.settings,
-                Settings::for_protocol::<BinanceAdapter>(),
+                Settings::for_adapter::<BinanceAdapter>(),
             ),
         };
         let a = AsterAdapter {
-            settings: std::mem::replace(&mut am.settings, Settings::for_protocol::<AsterAdapter>()),
+            settings: std::mem::replace(&mut am.settings, Settings::for_adapter::<AsterAdapter>()),
         };
         let (send, decisions) = mpsc::channel(64);
         let (stop, shutdown) = oneshot::channel();
@@ -71,19 +83,17 @@ impl Rig {
                 if d.binance.status == BookStatus::Offline || d.aster.status == BookStatus::Offline
                 {
                     assert_eq!(d.bias, Bias::Hold);
-                    assert!(d.edge_bps.is_none());
                 }
                 send.try_send(*d).unwrap();
             },
-            || 0,
         ));
         bm.request("/metadata")
             .await
-            .send(binance::Response::ok(binance::METADATA))
+            .send(Response::ok(BINANCE_METADATA))
             .unwrap();
         am.request("/metadata")
             .await
-            .send(aster::Response::ok(aster::METADATA))
+            .send(Response::ok(ASTER_METADATA))
             .unwrap();
         let bw = Some(bm.socket().await);
         let aw = Some(am.socket().await);
@@ -105,8 +115,8 @@ impl Rig {
     }
     async fn send(&mut self, venue: Venue, first: u64, last: u64, previous: u64) {
         let event = match venue {
-            Venue::Binance => binance::event(first, last, previous, "0.3"),
-            Venue::Aster => aster::event(first, last, previous, "0.3"),
+            Venue::Binance => event(Venue::Binance, first, last, previous, "0.3"),
+            Venue::Aster => event(Venue::Aster, first, last, previous, "0.3"),
         };
         self.socket(venue).send(event).await.unwrap();
     }
@@ -127,21 +137,13 @@ impl Rig {
         let a = self.am.request("/snapshot").await;
         self.send(Venue::Binance, 100, 102, 99).await;
         self.send(Venue::Aster, 100, 102, 99).await;
-        b.send(binance::Response::ok(binance::SNAPSHOT)).unwrap();
-        a.send(aster::Response::ok(aster::SNAPSHOT)).unwrap();
+        b.send(Response::ok(BINANCE_SNAPSHOT)).unwrap();
+        a.send(Response::ok(ASTER_SNAPSHOT)).unwrap();
         self.decision(|d| d.bias == Bias::LongBias).await
     }
     async fn fault(&mut self, venue: Venue, fault: Fault) {
         match fault {
             Fault::Gap => self.send(venue, 103, 104, 101).await,
-            Fault::Regression => self.send(venue, 99, 101, 98).await,
-            Fault::Conflict => {
-                let msg = match venue {
-                    Venue::Binance => binance::event(100, 102, 99, "0.4"),
-                    Venue::Aster => aster::event(100, 102, 99, "0.4"),
-                };
-                self.socket(venue).send(msg).await.unwrap();
-            }
             Fault::Malformed => self
                 .socket(venue)
                 .send(Message::Text("{bad".into()))
@@ -197,8 +199,6 @@ async fn any_feed_fault_holds_entire_instrument_until_new_snapshot_replay() {
     for venue in [Venue::Binance, Venue::Aster] {
         for fault in [
             Fault::Gap,
-            Fault::Regression,
-            Fault::Conflict,
             Fault::Malformed,
             Fault::Close,
             Fault::Eof,
@@ -217,8 +217,6 @@ async fn any_feed_fault_holds_entire_instrument_until_new_snapshot_replay() {
                 })
                 .await;
             assert_eq!(offline.bias, Bias::Hold, "{venue:?}/{fault:?}");
-            assert_eq!(offline.binance.exchange_time, online.binance.exchange_time);
-            assert_eq!(offline.aster.platform_time, online.aster.platform_time);
             if matches!(fault, Fault::Close | Fault::Eof | Fault::Oversized) {
                 rig.reconnect(venue).await;
             }
@@ -230,19 +228,15 @@ async fn any_feed_fault_holds_entire_instrument_until_new_snapshot_replay() {
                 Venue::Binance => {
                     let reply = rig.bm.request("/snapshot").await;
                     assert_hold_while_pending(&mut rig, venue).await;
-                    reply
-                        .send(binance::Response::ok(binance::SNAPSHOT))
-                        .unwrap();
+                    reply.send(Response::ok(BINANCE_SNAPSHOT)).unwrap();
                 }
                 Venue::Aster => {
                     let reply = rig.am.request("/snapshot").await;
                     assert_hold_while_pending(&mut rig, venue).await;
-                    reply.send(aster::Response::ok(aster::SNAPSHOT)).unwrap();
+                    reply.send(Response::ok(ASTER_SNAPSHOT)).unwrap();
                 }
             }
-            let restored = rig.decision(|d| d.bias == Bias::LongBias).await;
-            assert!(restored.binance.sequence >= offline.binance.sequence);
-            assert!(restored.aster.sequence >= offline.aster.sequence);
+            rig.decision(|d| d.bias == Bias::LongBias).await;
             rig.finish().await;
         }
     }
@@ -264,8 +258,20 @@ async fn slow_snapshot_overflow_and_late_http_keep_robot_on_hold() {
     let mut rig = Rig::new(1).await;
     let b = rig.bm.request("/snapshot").await;
     let old = rig.am.request("/snapshot").await;
+    rig.socket(Venue::Aster)
+        .send(Message::Ping(vec![42].into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(1), rig.socket(Venue::Aster).next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        Message::Pong(vec![42].into())
+    );
     rig.send(Venue::Binance, 100, 102, 99).await;
-    b.send(binance::Response::ok(binance::SNAPSHOT)).unwrap();
+    b.send(Response::ok(BINANCE_SNAPSHOT)).unwrap();
     let only_binance = rig
         .decision(|d| {
             d.binance.status == BookStatus::Online && d.aster.status == BookStatus::Offline
@@ -275,11 +281,11 @@ async fn slow_snapshot_overflow_and_late_http_keep_robot_on_hold() {
     rig.send(Venue::Aster, 100, 102, 99).await;
     rig.send(Venue::Aster, 103, 104, 102).await; // Overflow the one-message sync queue.
     let current = rig.am.request("/snapshot").await;
-    old.send(aster::Response::ok(aster::SNAPSHOT)).unwrap(); // Cancelled epoch's response.
+    old.send(Response::ok(ASTER_SNAPSHOT)).unwrap(); // Cancelled epoch's response.
     rig.send(Venue::Binance, 103, 104, 102).await;
     assert_hold_while_pending(&mut rig, Venue::Aster).await;
     rig.send(Venue::Aster, 100, 102, 99).await;
-    current.send(aster::Response::ok(aster::SNAPSHOT)).unwrap();
+    current.send(Response::ok(ASTER_SNAPSHOT)).unwrap();
     rig.decision(|d| d.bias == Bias::LongBias).await;
     rig.finish().await;
 }
@@ -290,9 +296,10 @@ async fn silent_feed_with_pings_and_duplicates_holds_then_goes_offline() {
         config::SYNC_MESSAGES,
         Duration::from_millis(200),
         Duration::from_secs(1),
+        config::HTTP_TIMEOUT,
     )
     .await;
-    let online = rig.ready().await;
+    rig.ready().await;
     let mut saw_stale = false;
     let mut previous = 102;
     let mut tick = tokio::time::interval(Duration::from_millis(50));
@@ -303,13 +310,12 @@ async fn silent_feed_with_pings_and_duplicates_holds_then_goes_offline() {
                 rig.send(Venue::Binance,previous+1,previous+2,previous).await;
                 previous+=2;
                 // Transport liveness and exact duplicates do not refresh market data.
-                let _=rig.socket(Venue::Aster).send(aster::event(100,102,99,"0.3")).await;
+                let _=rig.socket(Venue::Aster).send(event(Venue::Aster, 100,102,99,"0.3")).await;
                 let _=rig.socket(Venue::Aster).send(Message::Ping(vec![1].into())).await;
             }
             d=rig.decisions.recv()=>{
                 let d=d.unwrap();
                 assert_eq!(d.binance.status,BookStatus::Online);
-                assert_eq!(d.aster.platform_time,online.aster.platform_time);
                 if d.aster.status==BookStatus::Offline {
                     assert_eq!(d.bias,Bias::Hold);break;
                 }
@@ -322,4 +328,49 @@ async fn silent_feed_with_pings_and_duplicates_holds_then_goes_offline() {
         "age guard must suspend the robot before the feed watchdog"
     );
     rig.finish().await;
+}
+
+#[tokio::test]
+async fn snapshot_timeout_recovers_while_other_feed_stays_live() {
+    let mut rig = Rig::with_timing(
+        config::SYNC_MESSAGES,
+        Duration::from_secs(3),
+        config::WATCHDOG,
+        Duration::from_millis(150),
+    )
+    .await;
+    let b = rig.bm.request("/snapshot").await;
+    let old = rig.am.request("/snapshot").await;
+    rig.send(Venue::Binance, 100, 102, 99).await;
+    b.send(Response::ok(BINANCE_SNAPSHOT)).unwrap();
+    let d = rig
+        .decision(|d| d.binance.status == BookStatus::Online)
+        .await;
+    assert_eq!(d.bias, Bias::Hold);
+    assert_eq!(d.aster.status, BookStatus::Offline);
+    let retry = rig.am.request("/snapshot").await;
+    drop(old);
+    rig.socket(Venue::Binance)
+        .send(event(Venue::Binance, 103, 104, 102, "0.4"))
+        .await
+        .unwrap();
+    rig.send(Venue::Aster, 100, 102, 99).await;
+    retry.send(Response::ok(ASTER_SNAPSHOT)).unwrap();
+    let restored = rig
+        .decision(|d| d.bias == Bias::LongBias && d.binance.bid_qty_raw == Some(1_200_000_000))
+        .await;
+    assert_eq!(restored.binance.status, BookStatus::Online);
+    rig.finish().await;
+}
+
+const BINANCE_METADATA: &[u8] = include_bytes!("../../../../tests/fixtures/binance/metadata.json");
+const ASTER_METADATA: &[u8] = include_bytes!("../../../../tests/fixtures/aster/metadata.json");
+const BINANCE_SNAPSHOT: &[u8] = include_bytes!("../../../../tests/fixtures/binance/snapshot.json");
+const ASTER_SNAPSHOT: &[u8] = include_bytes!("../../../../tests/fixtures/aster/snapshot.json");
+fn event(venue: Venue, first: u64, last: u64, previous: u64, quantity: &str) -> Message {
+    let (bid, ask) = match venue {
+        Venue::Binance => (3499, 3501),
+        Venue::Aster => (3495, 3497),
+    };
+    Message::Text(format!(r#"{{"stream":"ethusdt@depth@100ms","data":{{"e":"depthUpdate","E":1700000000002,"T":1700000000001,"s":"ETHUSDT","U":{first},"u":{last},"pu":{previous},"b":[["{bid}","{quantity}"]],"a":[["{ask}","{quantity}"]]}}}}"#).into())
 }

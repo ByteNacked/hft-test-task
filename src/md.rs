@@ -13,12 +13,6 @@ use serde::Deserialize;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Venue {
-    Binance,
-    Aster,
-}
-
 pub const MAX_UNIX_MS: u64 = 253_402_300_799_999; // Last millisecond of year 9999.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReceiveTime {
@@ -73,9 +67,6 @@ impl EventTime {
     }
     pub fn received_at(self) -> Instant {
         self.receive.received_at
-    }
-    pub fn lag_ms(self) -> i128 {
-        i128::from(self.platform_time()) - i128::from(self.exchange_time)
     }
 }
 pub(crate) fn validate_timestamp(value: u64) -> Result<(), ProtocolError> {
@@ -294,3 +285,6 @@ pub(crate) fn decode_levels<const N: usize>(
     deserializer.end()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -49,13 +49,13 @@ pub fn diff(now: Instant) -> DepthDiff {
     }
 }
 pub fn book(now: Instant, mid: i64, quantity: i64, capacity: usize) -> OrderBook {
-    let mut book = OrderBook::new(rules(), capacity).unwrap();
-    book.load_snapshot(&mut snapshot(mid, quantity, 6)).unwrap();
-    book.apply_diff(&mut diff(now)).unwrap();
+    let mut book = OrderBook::new(capacity).unwrap();
+    book.load_snapshot(&snapshot(mid, quantity, 6)).unwrap();
+    book.apply_diff(&diff(now)).unwrap();
     book
 }
 pub fn view(book: &OrderBook) -> BookReader {
-    let (mut writer, mut reader) = book::channel(book.capacity()).unwrap();
+    let (mut writer, mut reader) = book::channel(crate::config::BOOK_LEVELS).unwrap();
     writer.publish(book, BookStatus::Online).unwrap();
     reader.update();
     reader

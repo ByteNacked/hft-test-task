@@ -63,8 +63,6 @@ pub enum BookError {
     NoSnapshot,
     #[error("Online requires a covered book and an applied diff")]
     NotReady,
-    #[error("publication sequence overflow")]
-    SequenceOverflow,
 }
 
 #[derive(Debug)]
@@ -74,12 +72,11 @@ pub struct OrderBook {
     scratch_bids: Vec<Level>,
     scratch_asks: Vec<Level>,
     capacity: usize,
-    rules: InstrumentRules,
     coverage: Option<Coverage>,
     event_time: Option<EventTime>,
 }
 impl OrderBook {
-    pub fn new(rules: InstrumentRules, capacity: usize) -> Result<Self, BookError> {
+    pub fn new(capacity: usize) -> Result<Self, BookError> {
         if !(ROBOT_LEVELS..=BOOK_LEVELS).contains(&capacity) {
             return Err(BookError::Capacity);
         }
@@ -89,7 +86,6 @@ impl OrderBook {
             scratch_bids: Vec::with_capacity(capacity),
             scratch_asks: Vec::with_capacity(capacity),
             capacity,
-            rules,
             coverage: None,
             event_time: None,
         })
@@ -107,19 +103,10 @@ impl OrderBook {
         self.event_time
     }
 
-    pub fn load_snapshot(&mut self, snapshot: &mut Snapshot) -> Result<(), BookError> {
-        prepare(&mut snapshot.bids, true, self.rules)?;
-        prepare(&mut snapshot.asks, false, self.rules)?;
+    /// Snapshot levels are already sorted and validated by the decoder.
+    pub(crate) fn load_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), BookError> {
         if snapshot.bids.len() > self.capacity || snapshot.asks.len() > self.capacity {
             return Err(BookError::Capacity);
-        }
-        if snapshot
-            .bids
-            .iter()
-            .chain(snapshot.asks.iter())
-            .any(|l| l.qty == Qty::ZERO)
-        {
-            return Err(BookError::ZeroSnapshotQuantity);
         }
         let coverage = Coverage {
             bid_floor: snapshot.bids.last().ok_or(BookError::EmptySide)?.price,
@@ -135,11 +122,9 @@ impl OrderBook {
         self.event_time = None;
         Ok(())
     }
-    /// Caller checks exchange sequence continuity before calling (adapter stage 7).
-    pub fn apply_diff(&mut self, diff: &mut DepthDiff) -> Result<(), BookError> {
+    /// Input is normalized by the decoder; SyncedBook checks exchange continuity.
+    pub(crate) fn apply_diff(&mut self, diff: &DepthDiff) -> Result<(), BookError> {
         let coverage = self.coverage.ok_or(BookError::NoSnapshot)?;
-        prepare(&mut diff.bids, true, self.rules)?;
-        prepare(&mut diff.asks, false, self.rules)?;
         merge(
             &self.bids,
             &diff.bids,
@@ -162,21 +147,6 @@ impl OrderBook {
     fn commit(&mut self) {
         std::mem::swap(&mut self.bids, &mut self.scratch_bids);
         std::mem::swap(&mut self.asks, &mut self.scratch_asks);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    #[cfg(test)]
-    pub(crate) fn allocated_capacities(&self) -> [usize; 4] {
-        [
-            self.bids.capacity(),
-            self.asks.capacity(),
-            self.scratch_bids.capacity(),
-            self.scratch_asks.capacity(),
-        ]
     }
 }
 

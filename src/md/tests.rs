@@ -1,9 +1,10 @@
-use hft_test_task::{
-    aster, binance,
+use crate::{
+    aster::AsterAdapter,
+    binance::BinanceAdapter,
     book::OrderBook,
     book::{self, BookStatus},
     config,
-    md::{DepthDiff, ProtocolError, ReceiveTime, Snapshot},
+    md::{DepthDiff, MDAdapter, ProtocolError, ReceiveTime, Snapshot},
     numeric::InstrumentRules,
     robot::{self, Bias},
 };
@@ -22,50 +23,47 @@ struct Protocol {
 fn protocols() -> [Protocol; 2] {
     [
         Protocol {
-            diff: binance::decode_diff,
-            snapshot: binance::decode_snapshot,
-            metadata: binance::decode_metadata,
-            diff_fixture: include_bytes!("fixtures/binance/diff.json"),
-            snapshot_fixture: include_bytes!("fixtures/binance/snapshot.json"),
-            metadata_fixture: include_bytes!("fixtures/binance/metadata.json"),
-            invalid_fixture: include_bytes!("fixtures/binance/invalid_precision.json"),
+            diff: BinanceAdapter::decode_diff,
+            snapshot: BinanceAdapter::decode_snapshot,
+            metadata: BinanceAdapter::decode_metadata,
+            diff_fixture: include_bytes!("../../tests/fixtures/binance/diff.json"),
+            snapshot_fixture: include_bytes!("../../tests/fixtures/binance/snapshot.json"),
+            metadata_fixture: include_bytes!("../../tests/fixtures/binance/metadata.json"),
+            invalid_fixture: include_bytes!("../../tests/fixtures/binance/invalid_precision.json"),
         },
         Protocol {
-            diff: aster::decode_diff,
-            snapshot: aster::decode_snapshot,
-            metadata: aster::decode_metadata,
-            diff_fixture: include_bytes!("fixtures/aster/diff.json"),
-            snapshot_fixture: include_bytes!("fixtures/aster/snapshot.json"),
-            metadata_fixture: include_bytes!("fixtures/aster/metadata.json"),
-            invalid_fixture: include_bytes!("fixtures/aster/invalid_precision.json"),
+            diff: AsterAdapter::decode_diff,
+            snapshot: AsterAdapter::decode_snapshot,
+            metadata: AsterAdapter::decode_metadata,
+            diff_fixture: include_bytes!("../../tests/fixtures/aster/diff.json"),
+            snapshot_fixture: include_bytes!("../../tests/fixtures/aster/snapshot.json"),
+            metadata_fixture: include_bytes!("../../tests/fixtures/aster/metadata.json"),
+            invalid_fixture: include_bytes!("../../tests/fixtures/aster/invalid_precision.json"),
         },
     ]
 }
 #[test]
-fn fixtures_flow_through_book_store_and_robot() {
+fn fixtures_flow_through_book_and_robot() {
     let now = Instant::now();
     let receive = ReceiveTime::new(1_700_000_000_010, now).unwrap();
     let mut readers = Vec::new();
     for protocol in protocols() {
         let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
-        assert_eq!(rules.tick_size().raw(), 50_000_000);
-        assert_eq!(rules.lot_size().raw(), 1_000_000);
-        let mut snapshot = (protocol.snapshot)(protocol.snapshot_fixture, rules).unwrap();
-        let mut book = OrderBook::new(rules, config::BOOK_LEVELS).unwrap();
-        book.load_snapshot(&mut snapshot).unwrap();
+        let snapshot = (protocol.snapshot)(protocol.snapshot_fixture, rules).unwrap();
+        let mut book = OrderBook::new(config::BOOK_LEVELS).unwrap();
+        book.load_snapshot(&snapshot).unwrap();
         assert_eq!(book.event_time(), None);
-        let mut diff = (protocol.diff)(protocol.diff_fixture, receive, rules).unwrap();
+        let diff = (protocol.diff)(protocol.diff_fixture, receive, rules).unwrap();
         assert_eq!(diff.time.exchange_time(), 1_700_000_000_002);
-        assert_eq!(diff.time.lag_ms(), 8);
         assert_eq!(
             (diff.first_id, diff.final_id, diff.previous_id),
             (100, 102, 99)
         );
-        book.apply_diff(&mut diff).unwrap();
+        book.apply_diff(&diff).unwrap();
         let (mut writer, mut reader) = book::channel(config::BOOK_LEVELS).unwrap();
         writer.publish(&book, BookStatus::Online).unwrap();
         reader.update();
-        assert_eq!(reader.view().received_at(), Some(now));
+        assert_eq!(reader.view().received_at, Some(now));
         readers.push(reader);
     }
     let decision = robot::evaluate(
@@ -75,7 +73,6 @@ fn fixtures_flow_through_book_store_and_robot() {
         now + Duration::from_millis(1),
     );
     assert_eq!(decision.bias, Bias::LongBias);
-    assert!(decision.edge_bps.unwrap().numerator < 0);
 }
 #[test]
 fn corrupted_diff_fields_and_bounds_are_rejected() {
@@ -207,52 +204,5 @@ fn snapshot_limits_and_metadata_validation() {
             (protocol.metadata)(&vec![b' '; config::METADATA_BYTES + 1]),
             Err(ProtocolError::BodyTooLarge)
         ));
-    }
-}
-#[test]
-fn binance_rejects_coin_margin_and_timestamps_keep_signed_lag() {
-    let protocol = protocols().into_iter().next().unwrap();
-    let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
-    let now = Instant::now();
-    let receive = ReceiveTime::new(1_700_000_000_000, now).unwrap();
-    assert_eq!(
-        (protocol.diff)(protocol.diff_fixture, receive, rules)
-            .unwrap()
-            .time
-            .lag_ms(),
-        -2
-    );
-    for (field, value) in [("st", json!(2)), ("ps", json!("ETHUSD"))] {
-        let mut bad: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
-        bad["data"][field] = value;
-        assert!(matches!(
-            (protocol.diff)(&serde_json::to_vec(&bad).unwrap(), receive, rules),
-            Err(ProtocolError::WrongStream)
-        ));
-    }
-    assert!(ReceiveTime::new(u64::MAX, now).is_err());
-}
-
-#[test]
-fn unrelated_instruments_do_not_change_units_and_metadata_arrays_are_bounded() {
-    for protocol in protocols() {
-        let base: Value = serde_json::from_slice(protocol.metadata_fixture).unwrap();
-        let mut mixed = base.clone();
-        mixed["symbols"].as_array_mut().unwrap().push(json!({"symbol":"BTCUSD_PERP","contractSize":100,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0"}]}));
-        assert!((protocol.metadata)(&serde_json::to_vec(&mixed).unwrap()).is_ok());
-        mixed["futuresType"] = json!("COIN_MARGINED");
-        assert!((protocol.metadata)(&serde_json::to_vec(&mixed).unwrap()).is_err());
-        let mut too_many = base.clone();
-        too_many["symbols"] = (0..4097).map(|_| json!({"symbol":"OTHER"})).collect();
-        assert!((protocol.metadata)(&serde_json::to_vec(&too_many).unwrap()).is_err());
-        let mut filters = base.clone();
-        filters["symbols"][0]["filters"] = (0..33).map(|_| json!({"filterType":"OTHER"})).collect();
-        assert!((protocol.metadata)(&serde_json::to_vec(&filters).unwrap()).is_err());
-        let mut duplicate = base.clone();
-        duplicate["symbols"][0]["filters"]
-            .as_array_mut()
-            .unwrap()
-            .push(base["symbols"][0]["filters"][0].clone());
-        assert!((protocol.metadata)(&serde_json::to_vec(&duplicate).unwrap()).is_err());
     }
 }

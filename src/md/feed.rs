@@ -1,12 +1,11 @@
 use crate::{
-    book::{BookError, BookPublisher, BookStatus},
+    book::{BookPublisher, BookStatus},
     config,
     md::{
-        AdapterError, Backoff, DepthDiff, ProtocolError, ReceiveTime, Snapshot, get_body,
+        AdapterError, Backoff, MDAdapter, ProtocolError, ReceiveTime, Snapshot, get_body,
         shutdown_requested,
         sync::{Applied, SyncedBook},
     },
-    metrics::{FeedFault, FeedMetrics, FeedState},
     numeric::InstrumentRules,
 };
 use futures_util::{Sink, Stream, future::BoxFuture};
@@ -24,24 +23,18 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_with_config,
     tungstenite::{self, Message, Utf8Bytes, protocol::WebSocketConfig},
 };
-use tracing::Instrument;
-use triple_buffer::Input;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Exchange-specific decoding, selected statically for each adapter.
-pub(crate) trait Protocol: Send + 'static {
-    const NAME: &'static str;
-    const WS_URL: &'static str;
-    const METADATA_URL: &'static str;
-    const SNAPSHOT_URL: &'static str;
-    fn decode_metadata(body: &[u8]) -> Result<InstrumentRules, ProtocolError>;
-    fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError>;
-    fn decode_diff(
-        body: &[u8],
-        received: ReceiveTime,
-        rules: InstrumentRules,
-    ) -> Result<DepthDiff, ProtocolError>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeedState {
+    Connecting,
+    Buffering,
+    SnapshotLoading,
+    Replaying,
+    Live,
+    Backoff,
+    Stopped,
 }
 
 pub(crate) struct Settings {
@@ -56,7 +49,7 @@ pub(crate) struct Settings {
     queue_bytes: usize,
 }
 impl Settings {
-    pub(crate) fn for_protocol<P: Protocol>() -> Self {
+    pub(crate) fn for_adapter<P: MDAdapter>() -> Self {
         Self {
             ws: P::WS_URL.into(),
             metadata: P::METADATA_URL.into(),
@@ -71,21 +64,19 @@ impl Settings {
     }
 }
 
-pub(crate) async fn run<P: Protocol>(
+pub(crate) async fn run<P: MDAdapter>(
     settings: Settings,
     books: BookPublisher,
-    mut metrics: Input<FeedMetrics>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), AdapterError> {
     let client = reqwest::Client::builder()
         .timeout(settings.http_timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let mut stats = FeedMetrics::default();
     let mut backoff = Backoff::new();
     let rules = loop {
         let body = tokio::select! {
-            _ = shutdown_requested(&mut shutdown) => { stats.state = FeedState::Stopped; metrics.write(stats); return Ok(()); }
+            _ = shutdown_requested(&mut shutdown) => { return Ok(()); }
             result = get_body(client.clone(), settings.metadata.clone(), config::METADATA_BYTES) => result,
         };
         match body {
@@ -100,12 +91,9 @@ pub(crate) async fn run<P: Protocol>(
                 ) =>
             {
                 tracing::warn!(venue = P::NAME, %error, "metadata request failed");
-                stats.state = FeedState::Backoff;
-                stats.last_fault = Some(FeedFault::Http);
-                metrics.write(stats);
                 let deadline = Instant::now() + backoff.next(error.retry_after());
                 tokio::select! {
-                    _ = shutdown_requested(&mut shutdown) => { stats.state = FeedState::Stopped; metrics.write(stats); return Ok(()); }
+                    _ = shutdown_requested(&mut shutdown) => { return Ok(()); }
                     _ = sleep_until(deadline) => {}
                 }
             }
@@ -117,10 +105,12 @@ pub(crate) async fn run<P: Protocol>(
         settings,
         client,
         rules,
-        synced: Box::new(SyncedBook::new(rules)?),
+        synced: Box::new(SyncedBook::new()?),
         books,
-        metrics,
-        stats,
+        state: FeedState::Connecting,
+        sync_epoch: 0,
+        last_diff_id: None,
+        next_log: Instant::now(),
         queue: VecDeque::with_capacity(config::SYNC_MESSAGES),
         queued_bytes: 0,
         job: SnapshotJob::Idle,
@@ -134,8 +124,8 @@ pub(crate) async fn run<P: Protocol>(
     // No parse worker is detached: an already running spawn_blocking cannot be cancelled.
     let offline = runner.offline();
     let drained = runner.job.drain().await;
-    runner.stats.state = FeedState::Stopped;
-    runner.metrics.write(runner.stats);
+    runner.state = FeedState::Stopped;
+    runner.log_state();
     result.and(offline).and(drained)
 }
 
@@ -150,8 +140,10 @@ struct Runner<P> {
     rules: InstrumentRules,
     synced: Box<SyncedBook>,
     books: BookPublisher,
-    metrics: Input<FeedMetrics>,
-    stats: FeedMetrics,
+    state: FeedState,
+    sync_epoch: u64,
+    last_diff_id: Option<u64>,
+    next_log: Instant,
     queue: VecDeque<Buffered>,
     queued_bytes: usize,
     job: SnapshotJob,
@@ -161,15 +153,16 @@ struct Runner<P> {
     live_since: Option<Instant>,
     online: bool,
 }
-impl<P: Protocol> Runner<P> {
+impl<P: MDAdapter> Runner<P> {
     async fn run(&mut self, shutdown: &mut watch::Receiver<bool>) -> Result<(), AdapterError> {
         self.offline()?;
         loop {
             if *shutdown.borrow() {
                 return Ok(());
             }
-            self.stats.state = FeedState::Connecting;
-            self.metrics.write(self.stats);
+            self.state = FeedState::Connecting;
+            self.log_state();
+
             let ws_config = WebSocketConfig::default()
                 .max_message_size(Some(config::MESSAGE_BYTES))
                 .max_frame_size(Some(config::MESSAGE_BYTES))
@@ -183,24 +176,9 @@ impl<P: Protocol> Runner<P> {
             };
             let error = match connection {
                 Ok(mut ws) => {
-                    self.stats.connection_epoch = self
-                        .stats
-                        .connection_epoch
-                        .checked_add(1)
-                        .ok_or(AdapterError::EpochOverflow)?;
                     self.begin_sync(Duration::ZERO)?;
-                    tracing::debug!(
-                        venue = P::NAME,
-                        connection_epoch = self.stats.connection_epoch,
-                        "market-data connected"
-                    );
-                    let span = tracing::debug_span!(
-                        "market_data",
-                        venue = P::NAME,
-                        symbol = config::SYMBOL,
-                        connection_epoch = self.stats.connection_epoch
-                    );
-                    let result = self.connected(&mut ws, shutdown).instrument(span).await;
+                    tracing::debug!(venue = P::NAME, "market-data connected");
+                    let result = self.connected(&mut ws, shutdown).await;
                     // Publish before any potentially blocking close/backoff operation.
                     self.offline()?;
                     let _ = timeout(config::CLOSE_TIMEOUT, ws.close(None)).await;
@@ -211,13 +189,13 @@ impl<P: Protocol> Runner<P> {
                 }
                 Err(error) => error,
             };
-            self.record_fault(&error);
+            tracing::warn!(venue=P::NAME, %error, "market-data recovery");
             if error.fatal() {
                 return Err(error);
             }
-            self.stats.reconnects += 1;
-            self.stats.state = FeedState::Backoff;
-            self.metrics.write(self.stats);
+            self.state = FeedState::Backoff;
+            self.log_state();
+
             self.job.cancel_http();
             let deadline =
                 (Instant::now() + self.backoff.next(error.retry_after())).max(self.next_snapshot);
@@ -226,6 +204,10 @@ impl<P: Protocol> Runner<P> {
                 _ = sleep_until(deadline) => {}
             }
         }
+    }
+    fn log_state(&mut self) {
+        tracing::debug!(venue=P::NAME, state=?self.state, last_diff_id=self.last_diff_id, "feed state");
+        self.next_log = Instant::now() + config::REPORT_INTERVAL;
     }
     fn offline(&mut self) -> Result<(), AdapterError> {
         self.books
@@ -250,12 +232,10 @@ impl<P: Protocol> Runner<P> {
         }
     }
     fn begin_sync(&mut self, delay: Duration) -> Result<(), AdapterError> {
-        self.stats.sync_epoch = self
-            .stats
+        self.sync_epoch = self
             .sync_epoch
             .checked_add(1)
             .ok_or(AdapterError::EpochOverflow)?;
-        self.stats.resyncs += 1;
         self.synced.reset();
         self.queue.clear();
         self.queued_bytes = 0;
@@ -263,49 +243,17 @@ impl<P: Protocol> Runner<P> {
         self.job.cancel_http(); // A parse worker retains its old epoch until joined.
         self.next_snapshot = self.next_snapshot.max(Instant::now() + delay);
         self.sync_deadline = self.next_snapshot + self.settings.sync_timeout;
-        self.stats.state = FeedState::Buffering;
-        self.metrics.write(self.stats);
+        self.state = FeedState::Buffering;
         Ok(())
     }
     fn recover(&mut self, error: AdapterError) -> Result<(), AdapterError> {
         self.offline()?;
-        self.record_fault(&error);
+        tracing::warn!(venue=P::NAME, %error, "market-data recovery");
         if error.fatal() {
             return Err(error);
         }
         let delay = self.backoff.next(error.retry_after());
         self.begin_sync(delay)
-    }
-    fn record_fault(&mut self, error: &AdapterError) {
-        let fault = match error {
-            AdapterError::Sequence(_) => {
-                self.stats.gaps += 1;
-                FeedFault::Gap
-            }
-            AdapterError::QueueOverflow
-            | AdapterError::Protocol(ProtocolError::BodyTooLarge)
-            | AdapterError::WebSocket(tungstenite::Error::Capacity(_))
-            | AdapterError::Book(BookError::Capacity) => {
-                self.stats.overflows += 1;
-                FeedFault::Overflow
-            }
-            AdapterError::Book(BookError::CoverageLost | BookError::EmptySide) => {
-                self.stats.coverage_lost += 1;
-                FeedFault::Coverage
-            }
-            AdapterError::Protocol(_) => {
-                self.stats.decode_errors += 1;
-                FeedFault::Decode
-            }
-            AdapterError::Book(_) => FeedFault::Numeric,
-            AdapterError::Timeout(_) => FeedFault::Timeout,
-            AdapterError::Http(error) if error.is_timeout() => FeedFault::Timeout,
-            AdapterError::Http(_) | AdapterError::HttpStatus { .. } => FeedFault::Http,
-            _ => FeedFault::Disconnect,
-        };
-        self.stats.last_fault = Some(fault);
-        self.metrics.write(self.stats);
-        tracing::warn!(venue=P::NAME, %error, "market-data recovery");
     }
     fn enqueue(&mut self, text: Utf8Bytes, received: ReceiveTime) -> Result<(), AdapterError> {
         if self.queue.len() == self.settings.queue_messages
@@ -322,16 +270,10 @@ impl<P: Protocol> Runner<P> {
         let final_id = diff.final_id;
         match self.synced.apply(diff)? {
             Applied::Update => {
-                self.stats.applied_diffs += 1;
-                self.stats.last_diff_id = Some(final_id);
-                self.stats.last_received_at = Some(frame.received.received_at());
+                self.last_diff_id = Some(final_id);
                 Ok(true)
             }
-            Applied::Duplicate => {
-                self.stats.duplicates += 1;
-                Ok(false)
-            }
-            Applied::BeforeSnapshot => Ok(false),
+            Applied::Duplicate | Applied::BeforeSnapshot => Ok(false),
         }
     }
     fn publish_online(&mut self) -> Result<(), AdapterError> {
@@ -349,14 +291,14 @@ impl<P: Protocol> Runner<P> {
             .map_err(AdapterError::Publication)?;
         self.log_status(true);
         self.live_since.get_or_insert_with(Instant::now);
-        self.stats.state = FeedState::Live;
+        self.state = FeedState::Live;
         Ok(())
     }
     fn complete(&mut self, completion: Completion) -> Result<(), AdapterError> {
         match completion {
             Completion::Body(epoch, result) => {
                 self.job = SnapshotJob::Idle;
-                if epoch != self.stats.sync_epoch {
+                if epoch != self.sync_epoch {
                     return Ok(());
                 }
                 match result {
@@ -368,14 +310,12 @@ impl<P: Protocol> Runner<P> {
                 self.job = SnapshotJob::Idle;
                 // Even obsolete workers must propagate panics to supervision.
                 let parsed = result?;
-                if epoch != self.stats.sync_epoch {
-                    self.stats.stale_snapshots += 1;
+                if epoch != self.sync_epoch {
                     return Ok(());
                 }
-                match parsed.and_then(|mut snapshot| self.synced.load(&mut snapshot)) {
+                match parsed.and_then(|snapshot| self.synced.load(&snapshot)) {
                     Ok(()) => {
-                        self.stats.snapshots += 1;
-                        self.stats.state = FeedState::Replaying;
+                        self.state = FeedState::Replaying;
                     }
                     Err(error) => self.recover(error)?,
                 }
@@ -394,6 +334,9 @@ impl<P: Protocol> Runner<P> {
                 return Ok(());
             }
             let now = Instant::now();
+            if now >= self.next_log {
+                self.log_state();
+            }
             if self
                 .live_since
                 .is_some_and(|start| now.duration_since(start) >= config::BACKOFF_RESET)
@@ -401,7 +344,7 @@ impl<P: Protocol> Runner<P> {
                 self.backoff.reset();
                 self.live_since = Some(now);
             }
-            let deadline = if self.stats.state == FeedState::Live {
+            let deadline = if self.state == FeedState::Live {
                 Instant::from_std(
                     self.synced
                         .book
@@ -413,24 +356,21 @@ impl<P: Protocol> Runner<P> {
                 self.sync_deadline
             };
             if now >= deadline {
-                return Err(AdapterError::Timeout(
-                    if self.stats.state == FeedState::Live {
-                        "data watchdog"
-                    } else {
-                        "sync"
-                    },
-                ));
+                return Err(AdapterError::Timeout(if self.state == FeedState::Live {
+                    "data watchdog"
+                } else {
+                    "sync"
+                }));
             }
             if !self.synced.has_snapshot() && self.job.is_idle() && now >= self.next_snapshot {
                 self.job.start(
-                    self.stats.sync_epoch,
+                    self.sync_epoch,
                     self.client.clone(),
                     self.settings.snapshot.clone(),
                 );
-                self.stats.state = FeedState::SnapshotLoading;
-                self.metrics.write(self.stats);
+                self.state = FeedState::SnapshotLoading;
             }
-            let mut wake = deadline;
+            let mut wake = deadline.min(self.next_log);
             if self.job.is_idle() && !self.synced.has_snapshot() {
                 wake = wake.min(self.next_snapshot);
             }
@@ -451,7 +391,6 @@ impl<P: Protocol> Runner<P> {
                     match message {
                         Some(Ok(Message::Text(text))) => {
                             let received = ReceiveTime::now()?; // Before decode, queue or replay.
-                            self.stats.frames += 1;
                             let result = if self.synced.has_snapshot() && self.queue.is_empty() {
                                 self.apply(Buffered { text, received }).and_then(|updated| if updated { self.publish_online() } else { Ok(()) })
                             } else { self.enqueue(text, received) };
@@ -475,7 +414,6 @@ impl<P: Protocol> Runner<P> {
                         && let Err(error) = self.publish_online() { self.recover(error)?; }
                 }
             }
-            self.metrics.write(self.stats);
         }
     }
 }
@@ -528,7 +466,7 @@ impl SnapshotJob {
             request: Box::pin(get_body(client, url, config::MESSAGE_BYTES)),
         };
     }
-    fn parse<P: Protocol>(&mut self, epoch: u64, body: Vec<u8>, rules: InstrumentRules) {
+    fn parse<P: MDAdapter>(&mut self, epoch: u64, body: Vec<u8>, rules: InstrumentRules) {
         *self = Self::Parse {
             epoch,
             worker: tokio::task::spawn_blocking(move || {
