@@ -1,7 +1,7 @@
 use crate::{
     book::{self, BookReader, BookStatus},
     book::{Level, OrderBook},
-    md::{DepthDiff, EventTime, ReceiveTime, Snapshot},
+    md::{DepthDiff, EventTime, Snapshot},
     numeric::{InstrumentRules, Price, Qty},
 };
 use std::time::Instant;
@@ -21,11 +21,7 @@ pub fn rules() -> InstrumentRules {
     InstrumentRules::new(price(1), qty(1)).unwrap()
 }
 pub fn time(now: Instant) -> EventTime {
-    EventTime::new(
-        1_700_000_000_000,
-        ReceiveTime::new(1_700_000_000_010, now).unwrap(),
-    )
-    .unwrap()
+    EventTime::new(1_700_000_000_000, now).unwrap()
 }
 pub fn snapshot(mid: i64, quantity: i64, count: usize) -> Snapshot {
     Snapshot {
@@ -55,7 +51,11 @@ pub fn book(now: Instant, mid: i64, quantity: i64, capacity: usize) -> OrderBook
     book
 }
 pub fn view(book: &OrderBook) -> BookReader {
-    let (mut writer, mut reader) = book::channel(crate::config::BOOK_LEVELS).unwrap();
+    let (mut writer, mut reader) = {
+        static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        book::channel(crate::config::BOOK_LEVELS, &EPOCH)
+    }
+    .unwrap();
     writer.publish(book, BookStatus::Online).unwrap();
     reader.update();
     reader

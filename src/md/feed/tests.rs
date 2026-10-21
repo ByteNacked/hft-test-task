@@ -10,7 +10,11 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
         "../../../tests/fixtures/binance/metadata.json"
     ))
     .unwrap();
-    let (books, mut reader) = book::channel(config::BOOK_LEVELS).unwrap();
+    let (books, mut reader) = {
+        static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        book::channel(config::BOOK_LEVELS, &EPOCH)
+    }
+    .unwrap();
     let mut runner = Runner::<crate::binance::BinanceAdapter> {
         protocol: PhantomData,
         settings: Settings::for_adapter::<crate::binance::BinanceAdapter>(),

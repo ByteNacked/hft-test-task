@@ -10,7 +10,7 @@ import time
 
 
 def both_online(text):
-    return any("decision for Aster" in line and "binance=Online " in line
+    return any("robot decision" in line and "binance=Online " in line
                and "aster=Online " in line for line in text.split("\n")[:-1])
 
 

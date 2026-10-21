@@ -45,7 +45,7 @@ fn protocols() -> [Protocol; 2] {
 #[test]
 fn fixtures_flow_through_book_and_robot() {
     let now = Instant::now();
-    let receive = ReceiveTime::new(1_700_000_000_010, now).unwrap();
+    let receive = now;
     let mut readers = Vec::new();
     for protocol in protocols() {
         let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
@@ -60,10 +60,14 @@ fn fixtures_flow_through_book_and_robot() {
             (100, 102, 99)
         );
         book.apply_diff(&diff).unwrap();
-        let (mut writer, mut reader) = book::channel(config::BOOK_LEVELS).unwrap();
+        let (mut writer, mut reader) = {
+            static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            book::channel(config::BOOK_LEVELS, &EPOCH)
+        }
+        .unwrap();
         writer.publish(&book, BookStatus::Online).unwrap();
         reader.update();
-        assert_eq!(reader.view().received_at, Some(now));
+        assert_eq!(reader.view().platform_time, Some(now));
         readers.push(reader);
     }
     let decision = robot::evaluate(
@@ -72,11 +76,11 @@ fn fixtures_flow_through_book_and_robot() {
         &Default::default(),
         now + Duration::from_millis(1),
     );
-    assert_eq!(decision.bias, Bias::LongBias);
+    assert_eq!(decision.bias, Bias::LongBiasAster);
 }
 #[test]
 fn corrupted_diff_fields_and_bounds_are_rejected() {
-    let receive = ReceiveTime::new(1_700_000_000_010, Instant::now()).unwrap();
+    let receive = Instant::now();
     for protocol in protocols() {
         let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
         assert!((protocol.diff)(protocol.invalid_fixture, receive, rules).is_err());

@@ -1,9 +1,5 @@
 use super::*;
-use crate::{
-    md::{EventTime, ReceiveTime},
-    numeric::SCALE,
-    test_support::*,
-};
+use crate::{md::EventTime, numeric::SCALE, test_support::*};
 use std::time::{Duration, Instant};
 
 fn event(now: Instant, first: u64, last: u64, previous: u64, quantity: i64) -> DepthDiff {
@@ -50,7 +46,7 @@ fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
             .unwrap(),
         Applied::Duplicate
     );
-    assert_eq!(synced.book.event_time().unwrap().received_at(), now);
+    assert_eq!(synced.book.event_time().unwrap().platform_time(), now);
     for (first, last, previous, qty) in [
         (100, 102, 99, 3 * SCALE),
         (99, 101, 98, 2 * SCALE),
@@ -61,10 +57,10 @@ fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
             Err(AdapterError::Sequence(_))
         ));
         assert_eq!(synced.book.bids()[0].qty.raw(), 2 * SCALE);
-        assert_eq!(synced.book.event_time().unwrap().received_at(), now);
+        assert_eq!(synced.book.event_time().unwrap().platform_time(), now);
     }
     let mut conflict = event(now, 100, 102, 99, 2 * SCALE);
-    conflict.time = EventTime::new(123, ReceiveTime::new(456, now).unwrap()).unwrap();
+    conflict.time = EventTime::new(123, now).unwrap();
     assert!(matches!(
         synced.apply(conflict),
         Err(AdapterError::Sequence(_))

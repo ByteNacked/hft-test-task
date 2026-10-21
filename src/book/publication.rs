@@ -1,9 +1,12 @@
-//! SPSC latest-state publication. Only a validated writer can populate a view.
+//! Latest complete book plus an independent, persistent generation of feed gaps.
 use crate::{
     book::{BookError, Level, OrderBook},
     config::{BOOK_LEVELS, ROBOT_LEVELS},
 };
-use std::time::Instant;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
+};
 use triple_buffer::{Input, Output, TripleBuffer};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -19,9 +22,8 @@ pub struct BookView {
     pub(crate) asks: Vec<Level>,
     pub(crate) status: BookStatus,
     pub(crate) exchange_time: Option<u64>,
-    pub(crate) platform_time: Option<u64>,
-    pub(crate) received_at: Option<Instant>,
-    capacity: usize,
+    pub(crate) platform_time: Option<Instant>,
+    epoch: Option<u64>,
 }
 impl BookView {
     fn empty(capacity: usize) -> Self {
@@ -31,50 +33,80 @@ impl BookView {
             status: BookStatus::Offline,
             exchange_time: None,
             platform_time: None,
-            received_at: None,
-            capacity,
+            epoch: None,
         }
     }
 }
 impl Clone for BookView {
     fn clone(&self) -> Self {
-        // Construction only. Vec::clone on an empty Vec would discard spare capacity.
-        let mut cloned = Self::empty(self.capacity);
+        // TripleBuffer clones at construction; preserve the empty Vecs' capacity.
+        let mut cloned = Self::empty(self.bids.capacity());
         cloned.bids.extend_from_slice(&self.bids);
         cloned.asks.extend_from_slice(&self.asks);
         cloned.status = self.status;
         cloned.exchange_time = self.exchange_time;
         cloned.platform_time = self.platform_time;
-        cloned.received_at = self.received_at;
+        cloned.epoch = self.epoch;
         cloned
     }
 }
 pub struct BookPublisher {
     input: Input<BookView>,
     capacity: usize,
+    offline_epoch: &'static AtomicU64,
 }
 pub struct BookReader {
     output: Output<BookView>,
+    offline_epoch: &'static AtomicU64,
+    seen_epoch: u64,
 }
-pub fn channel(capacity: usize) -> Result<(BookPublisher, BookReader), BookError> {
+/// One channel per counter; its publisher is the only writer to that counter.
+pub fn channel(
+    capacity: usize,
+    offline_epoch: &'static AtomicU64,
+) -> Result<(BookPublisher, BookReader), BookError> {
     if !(ROBOT_LEVELS..=BOOK_LEVELS).contains(&capacity) {
         return Err(BookError::Capacity);
     }
+    // Preserve the generation across sequential service runs; never reset a
+    // counter that may still be observed by a reader.
+    let seen_epoch = offline_epoch.load(Ordering::Acquire);
     let (input, output) = TripleBuffer::new(&BookView::empty(capacity)).split();
-    Ok((BookPublisher { input, capacity }, BookReader { output }))
+    Ok((
+        BookPublisher {
+            input,
+            capacity,
+            offline_epoch,
+        },
+        BookReader {
+            output,
+            offline_epoch,
+            seen_epoch,
+        },
+    ))
 }
 impl BookPublisher {
-    /// Copies the complete state, including status-only changes; timestamps come from
-    /// the last committed diff, never from publication time. No allocations or awaits.
+    /// Offline invalidates all older views independently of book publication.
+    /// Online copies the book, preserving diff timestamps. No allocations or awaits.
     pub fn publish(&mut self, book: &OrderBook, status: BookStatus) -> Result<(), BookError> {
+        if status == BookStatus::Offline {
+            // One writer. Release publishes invalidation independently of the triple buffer;
+            // the reader acquires it before accepting a view from this epoch.
+            let epoch = self
+                .offline_epoch
+                .load(Ordering::Relaxed)
+                .checked_add(1)
+                .ok_or(BookError::PublicationEpochOverflow)?;
+            self.offline_epoch.store(epoch, Ordering::Release);
+            return Ok(());
+        }
         if book.bids().len() > self.capacity || book.asks().len() > self.capacity {
             return Err(BookError::Capacity);
         }
-        if status == BookStatus::Online
-            && (book.event_time().is_none()
-                || !book
-                    .coverage()
-                    .is_some_and(|c| c.is_sufficient(book.bids(), book.asks())))
+        if book.event_time().is_none()
+            || !book
+                .coverage()
+                .is_some_and(|c| c.is_sufficient(book.bids(), book.asks()))
         {
             return Err(BookError::NotReady);
         }
@@ -84,16 +116,32 @@ impl BookPublisher {
         slot.bids.extend_from_slice(book.bids());
         slot.asks.extend_from_slice(book.asks());
         slot.status = status;
+        // Only this producer increments the epoch; book data travels through the triple buffer.
+        slot.epoch = Some(self.offline_epoch.load(Ordering::Relaxed));
         slot.exchange_time = book.event_time().map(|t| t.exchange_time());
         slot.platform_time = book.event_time().map(|t| t.platform_time());
-        slot.received_at = book.event_time().map(|t| t.received_at());
         self.input.publish();
         Ok(())
     }
 }
 impl BookReader {
     pub fn update(&mut self) -> bool {
-        self.output.update()
+        let previous_status = self.output.output_buffer().status;
+        let updated = self.output.update();
+        // Acquire the book BEFORE the epoch. A recovered publication synchronizes
+        // with its preceding gap, so Online cannot conceal that gap from the reader.
+        let epoch = self.offline_epoch.load(Ordering::Acquire);
+        let interrupted = epoch != self.seen_epoch;
+        self.seen_epoch = epoch;
+        let view = self.output.output_buffer_mut();
+        view.status = if !interrupted && view.epoch == Some(epoch) {
+            BookStatus::Online
+        } else {
+            BookStatus::Offline
+        };
+        // A recovered book acquired with a gap stays held, but masked Offline for
+        // this pass. Next pass acquires any newer book or unmasks this one.
+        updated || interrupted || view.status != previous_status
     }
     /// Stable until the next explicit update; this call never implicitly consumes a slot.
     pub fn view(&self) -> &BookView {

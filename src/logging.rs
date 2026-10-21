@@ -76,11 +76,11 @@ pub fn decision_reporter() -> impl FnMut(&crate::robot::Decision) {
     move |d| {
         if d.bias != previous {
             tracing::info!(name: "bias_changed", bias=?d.bias,
-                binance=%d.binance, aster=%d.aster, "Aster bias changed");
+                binance=%d.binance, aster=%d.aster, "bias changed");
             previous = d.bias;
         }
         tracing::debug!(binance=%d.binance, aster=%d.aster, bias=?d.bias,
             skew_ms=d.skew.map(|s|s.as_millis() as u64), threshold_bps=d.threshold_bps,
-            "decision for Aster");
+            "robot decision");
     }
 }

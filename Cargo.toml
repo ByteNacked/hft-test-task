@@ -18,10 +18,10 @@ fixnum = { version = "=0.9.5", default-features = false, features = ["std", "i64
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
-triple_buffer = "9"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+triple_buffer = "9"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["io-util"] }

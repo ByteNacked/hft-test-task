@@ -10,63 +10,30 @@ use crate::{
 pub use adapter::{AdapterError, MDAdapter, spawn_adapter};
 pub(crate) use adapter::{Backoff, get_body, shutdown_requested};
 use serde::Deserialize;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 use thiserror::Error;
 
 pub const MAX_UNIX_MS: u64 = 253_402_300_799_999; // Last millisecond of year 9999.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReceiveTime {
-    platform_time: u64,
-    received_at: Instant,
-}
-impl ReceiveTime {
-    /// Call when a complete WS message is received, before parsing or queuing it.
-    pub fn now() -> Result<Self, ProtocolError> {
-        let received_at = Instant::now();
-        let ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| ProtocolError::Timestamp)?
-            .as_millis();
-        Self::new(
-            u64::try_from(ms).map_err(|_| ProtocolError::Timestamp)?,
-            received_at,
-        )
-    }
-    pub fn new(platform_time: u64, received_at: Instant) -> Result<Self, ProtocolError> {
-        validate_timestamp(platform_time)?;
-        Ok(Self {
-            platform_time,
-            received_at,
-        })
-    }
-    pub fn platform_time(self) -> u64 {
-        self.platform_time
-    }
-    pub fn received_at(self) -> Instant {
-        self.received_at
-    }
-}
+/// Monotonic timestamp captured on receipt of a complete WS message, before parsing.
+pub type ReceiveTime = Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventTime {
     exchange_time: u64,
-    receive: ReceiveTime,
+    platform_time: ReceiveTime,
 }
 impl EventTime {
     pub fn new(exchange_time: u64, receive: ReceiveTime) -> Result<Self, ProtocolError> {
         validate_timestamp(exchange_time)?;
         Ok(Self {
             exchange_time,
-            receive,
+            platform_time: receive,
         })
     }
     pub fn exchange_time(self) -> u64 {
         self.exchange_time
     }
-    pub fn platform_time(self) -> u64 {
-        self.receive.platform_time
-    }
-    pub fn received_at(self) -> Instant {
-        self.receive.received_at
+    pub fn platform_time(self) -> Instant {
+        self.platform_time
     }
 }
 pub(crate) fn validate_timestamp(value: u64) -> Result<(), ProtocolError> {

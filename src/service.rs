@@ -9,7 +9,7 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
 };
@@ -83,6 +83,10 @@ fn record_error(first: &mut Option<ServiceError>, worker: &'static str, detail: 
     }
 }
 
+// One running service per process; one writer (its feed) per counter.
+static BINANCE_OFFLINE_EPOCH: AtomicU64 = AtomicU64::new(0);
+static ASTER_OFFLINE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
 /// The caller owns the runtime and logging guard and must await this future through cleanup.
 /// Network failures recover inside adapters; worker errors/early exits stop the whole service.
 pub async fn run(
@@ -92,8 +96,8 @@ pub async fn run(
     shutdown: impl Future<Output = std::io::Result<()>>,
     report: impl FnMut(&Decision) + Send + 'static,
 ) -> Result<(), ServiceError> {
-    let (bw, br) = book::channel(config::BOOK_LEVELS)?;
-    let (aw, ar) = book::channel(config::BOOK_LEVELS)?;
+    let (bw, br) = book::channel(config::BOOK_LEVELS, &BINANCE_OFFLINE_EPOCH)?;
+    let (aw, ar) = book::channel(config::BOOK_LEVELS, &ASTER_OFFLINE_EPOCH)?;
     let (stop_feeds, shutdown_feeds) = watch::channel(false);
     let stop_robot = Arc::new(AtomicBool::new(false));
     let mut workers = Workers::default();

@@ -14,6 +14,9 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
+// Production counters are process-wide, so service instances must not overlap.
+static SERVICE_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 type ServerSocket = WebSocketStream<TcpStream>;
 #[derive(Clone, Copy, Debug)]
 enum Venue {
@@ -29,6 +32,7 @@ enum Fault {
     Oversized,
 }
 struct Rig {
+    _service_guard: tokio::sync::MutexGuard<'static, ()>,
     bm: Mock,
     am: Mock,
     bw: Option<ServerSocket>,
@@ -53,6 +57,7 @@ impl Rig {
         watchdog: Duration,
         http_timeout: Duration,
     ) -> Self {
+        let service_guard = SERVICE_TEST.lock().await;
         let mut bm = Mock::new::<BinanceAdapter>().await;
         let mut am = Mock::new::<AsterAdapter>().await;
         bm.settings.queue_messages = queue_messages;
@@ -98,6 +103,7 @@ impl Rig {
         let bw = Some(bm.socket().await);
         let aw = Some(am.socket().await);
         Self {
+            _service_guard: service_guard,
             bm,
             am,
             bw,
@@ -139,7 +145,7 @@ impl Rig {
         self.send(Venue::Aster, 100, 102, 99).await;
         b.send(Response::ok(BINANCE_SNAPSHOT)).unwrap();
         a.send(Response::ok(ASTER_SNAPSHOT)).unwrap();
-        self.decision(|d| d.bias == Bias::LongBias).await
+        self.decision(|d| d.bias == Bias::LongBiasAster).await
     }
     async fn fault(&mut self, venue: Venue, fault: Fault) {
         match fault {
@@ -236,7 +242,7 @@ async fn any_feed_fault_holds_entire_instrument_until_new_snapshot_replay() {
                     reply.send(Response::ok(ASTER_SNAPSHOT)).unwrap();
                 }
             }
-            rig.decision(|d| d.bias == Bias::LongBias).await;
+            rig.decision(|d| d.bias == Bias::LongBiasAster).await;
             rig.finish().await;
         }
     }
@@ -286,7 +292,7 @@ async fn slow_snapshot_overflow_and_late_http_keep_robot_on_hold() {
     assert_hold_while_pending(&mut rig, Venue::Aster).await;
     rig.send(Venue::Aster, 100, 102, 99).await;
     current.send(Response::ok(ASTER_SNAPSHOT)).unwrap();
-    rig.decision(|d| d.bias == Bias::LongBias).await;
+    rig.decision(|d| d.bias == Bias::LongBiasAster).await;
     rig.finish().await;
 }
 
@@ -357,7 +363,7 @@ async fn snapshot_timeout_recovers_while_other_feed_stays_live() {
     rig.send(Venue::Aster, 100, 102, 99).await;
     retry.send(Response::ok(ASTER_SNAPSHOT)).unwrap();
     let restored = rig
-        .decision(|d| d.bias == Bias::LongBias && d.binance.bid_qty_raw == Some(1_200_000_000))
+        .decision(|d| d.bias == Bias::LongBiasAster && d.binance.bid_qty_raw == Some(1_200_000_000))
         .await;
     assert_eq!(restored.binance.status, BookStatus::Online);
     rig.finish().await;

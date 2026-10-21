@@ -45,6 +45,8 @@ impl Coverage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum BookError {
+    #[error("book publication epoch overflow")]
+    PublicationEpochOverflow,
     #[error(transparent)]
     Numeric(#[from] NumericError),
     #[error("duplicate price in one payload side")]

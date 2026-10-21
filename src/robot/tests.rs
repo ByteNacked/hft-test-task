@@ -12,11 +12,11 @@ fn directions_threshold_equality_and_exact_explanation() {
     let now = Instant::now();
     let b = view(&book(now, 20_000, 200_000_000, 16));
     for (mid, bias) in [
-        (19_989, Bias::LongBias),
+        (19_989, Bias::LongBiasAster),
         (19_990, Bias::Hold),
         (20_000, Bias::Hold),
         (20_010, Bias::Hold),
-        (20_011, Bias::ShortBias),
+        (20_011, Bias::ShortBiasAster),
     ] {
         let a = view(&book(now, mid, 200_000_000, 16));
         let d = evaluate(b.view(), a.view(), &Default::default(), now);
@@ -33,7 +33,7 @@ fn freshness_skew_and_volume_boundaries() {
     let a = view(&book(now, 99_000, SCALE, 16));
     assert_eq!(
         evaluate(b.view(), a.view(), &config, now + config.max_age()).bias,
-        Bias::LongBias
+        Bias::LongBiasAster
     );
     assert_eq!(
         evaluate(
@@ -46,7 +46,7 @@ fn freshness_skew_and_volume_boundaries() {
         Bias::Hold
     );
     for (skew, bias) in [
-        (config.max_skew(), Bias::LongBias),
+        (config.max_skew(), Bias::LongBiasAster),
         (config.max_skew() + Duration::from_nanos(1), Bias::Hold),
     ] {
         let a = view(&book(now + skew, 99_000, SCALE, 16));
@@ -65,7 +65,11 @@ fn either_offline_book_blocks_bias() {
     let now = Instant::now();
     let book = book(now, 100, SCALE, 16);
     let b = view(&book);
-    let (mut writer, mut reader) = book::channel(16).unwrap();
+    let (mut writer, mut reader) = {
+        static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        book::channel(16, &EPOCH)
+    }
+    .unwrap();
     writer.publish(&book, BookStatus::Offline).unwrap();
     reader.update();
     assert_eq!(
@@ -76,4 +80,38 @@ fn either_offline_book_blocks_bias() {
         evaluate(reader.view(), b.view(), &Default::default(), now).bias,
         Bias::Hold
     );
+}
+
+#[test]
+fn latest_recovery_cannot_skip_hold_after_offline() {
+    for fault_on_binance in [false, true] {
+        let now = Instant::now();
+        let binance = book(now, 100_000, SCALE, 16);
+        let aster = book(now, 99_000, SCALE, 16);
+        let (mut bw, br) = {
+            static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            book::channel(16, &EPOCH)
+        }
+        .unwrap();
+        let (mut aw, ar) = {
+            static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            book::channel(16, &EPOCH)
+        }
+        .unwrap();
+        bw.publish(&binance, BookStatus::Online).unwrap();
+        aw.publish(&aster, BookStatus::Online).unwrap();
+        let mut robot = super::Robot::new(br, ar, RobotConfig::default());
+        assert_eq!(robot.poll().unwrap().bias, Bias::LongBiasAster);
+        let (writer, book) = if fault_on_binance {
+            (&mut bw, &binance)
+        } else {
+            (&mut aw, &aster)
+        };
+        writer.publish(book, BookStatus::Online).unwrap();
+        writer.publish(book, BookStatus::Offline).unwrap();
+        writer.publish(book, BookStatus::Online).unwrap();
+        // Only the newest book remains, but Offline must be evaluated first.
+        assert_eq!(robot.poll().unwrap().bias, Bias::Hold);
+        assert_eq!(robot.poll().unwrap().bias, Bias::LongBiasAster);
+    }
 }

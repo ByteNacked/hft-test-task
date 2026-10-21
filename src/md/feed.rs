@@ -206,16 +206,22 @@ impl<P: MDAdapter> Runner<P> {
         }
     }
     fn log_state(&mut self) {
-        tracing::debug!(venue=P::NAME, state=?self.state, last_diff_id=self.last_diff_id, "feed state");
+        tracing::debug!(venue=P::NAME, state=?self.state, last_diff_id=self.last_diff_id,
+            exchange_time=self.synced.book.event_time().map(|time| time.exchange_time()),
+            "feed state");
         self.next_log = Instant::now() + config::REPORT_INTERVAL;
     }
     fn offline(&mut self) -> Result<(), AdapterError> {
-        self.books
-            .publish(&self.synced.book, BookStatus::Offline)
-            .map_err(AdapterError::Publication)?;
+        self.publish(BookStatus::Offline)?;
         self.log_status(false);
         Ok(())
     }
+    fn publish(&mut self, status: BookStatus) -> Result<(), AdapterError> {
+        self.books
+            .publish(&self.synced.book, status)
+            .map_err(AdapterError::Publication)
+    }
+
     fn log_status(&mut self, online: bool) {
         if self.online != online {
             self.online = online;
@@ -282,13 +288,11 @@ impl<P: MDAdapter> Runner<P> {
             .book
             .event_time()
             .ok_or(AdapterError::Sequence("no bridge"))?
-            .received_at();
+            .platform_time();
         if Instant::now() >= Instant::from_std(received) + self.settings.watchdog {
             return Err(AdapterError::Timeout("data watchdog"));
         }
-        self.books
-            .publish(&self.synced.book, BookStatus::Online)
-            .map_err(AdapterError::Publication)?;
+        self.publish(BookStatus::Online)?;
         self.log_status(true);
         self.live_since.get_or_insert_with(Instant::now);
         self.state = FeedState::Live;
@@ -350,7 +354,7 @@ impl<P: MDAdapter> Runner<P> {
                         .book
                         .event_time()
                         .ok_or(AdapterError::Sequence("missing live time"))?
-                        .received_at(),
+                        .platform_time(),
                 ) + self.settings.watchdog
             } else {
                 self.sync_deadline
@@ -390,7 +394,7 @@ impl<P: MDAdapter> Runner<P> {
                 message = next_message(ws, &mut flush_since) => {
                     match message {
                         Some(Ok(Message::Text(text))) => {
-                            let received = ReceiveTime::now()?; // Before decode, queue or replay.
+                            let received = ReceiveTime::now(); // Before decode, queue or replay.
                             let result = if self.synced.has_snapshot() && self.queue.is_empty() {
                                 self.apply(Buffered { text, received }).and_then(|updated| if updated { self.publish_online() } else { Ok(()) })
                             } else { self.enqueue(text, received) };

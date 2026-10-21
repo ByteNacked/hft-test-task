@@ -15,8 +15,8 @@ use std::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bias {
     Hold,
-    LongBias,
-    ShortBias,
+    LongBiasAster,
+    ShortBiasAster,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BookNumbers {
@@ -52,7 +52,7 @@ impl BookNumbers {
             bid_qty_raw: sum(&view.bids),
             ask_qty_raw: sum(&view.asks),
             age: view
-                .received_at
+                .platform_time
                 .and_then(|received| now.checked_duration_since(received)),
         }
     }
@@ -81,13 +81,16 @@ pub fn evaluate(
         bias: Bias::Hold,
         binance: BookNumbers::from_view(binance, now),
         aster: BookNumbers::from_view(aster, now),
-        skew: binance.received_at.zip(aster.received_at).map(|(a, b)| {
-            if a >= b {
-                a.duration_since(b)
-            } else {
-                b.duration_since(a)
-            }
-        }),
+        skew: binance
+            .platform_time
+            .zip(aster.platform_time)
+            .map(|(a, b)| {
+                if a >= b {
+                    a.duration_since(b)
+                } else {
+                    b.duration_since(a)
+                }
+            }),
         threshold_bps: config.threshold_bps(),
     };
     if binance.status != BookStatus::Online || aster.status != BookStatus::Online {
@@ -114,9 +117,9 @@ pub fn evaluate(
         let edge = (mid_a - mid_b) * 10_000;
         let threshold = mid_b * i128::from(config.threshold_bps());
         decision.bias = if edge < -threshold {
-            Bias::LongBias
+            Bias::LongBiasAster
         } else if edge > threshold {
-            Bias::ShortBias
+            Bias::ShortBiasAster
         } else {
             Bias::Hold
         };
@@ -175,7 +178,7 @@ impl Robot {
         let binance_changed = self.binance.update();
         let aster_changed = self.aster.update(); // Deliberately not short-circuited.
         // Sample AFTER acquiring both views. Otherwise a concurrent publication can
-        // carry received_at later than our sampled now and spuriously look invalid.
+        // carry platform_time later than our sampled now and spuriously look invalid.
         let now = Instant::now();
         let report_due = self.next_report.is_none_or(|deadline| now >= deadline);
         let freshness_due = self.next_freshness.is_some_and(|deadline| now >= deadline);
@@ -193,7 +196,7 @@ impl Robot {
             .into_iter()
             .filter(|view| view.status == BookStatus::Online)
             .filter_map(|view| {
-                view.received_at?
+                view.platform_time?
                     .checked_add(self.config.max_age())?
                     .checked_add(Duration::from_nanos(1))
             })

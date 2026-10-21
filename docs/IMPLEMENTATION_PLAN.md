@@ -7,7 +7,7 @@
 1. Точный fixed-point парсинг, `Price`/`Qty`, параметры и лимиты.
 2. Декодирование metadata/snapshot/diff обеих площадок.
 3. Книга на `Vec`, транзакционный merge и контроль покрытия.
-4. Целостная публикация через triple buffer.
+4. Публикация последней книги через triple buffer; статические счётчики разрывов гарантируют Offline/Hold перед восстановлением.
 5. Робот: Long/Short относительно Aster, Hold при недоступных/несвежих данных.
 6. Независимые адаптеры: snapshot + diff, reconnect, backoff, watchdog.
 7. Запуск потоков, supervision и SIGINT/SIGTERM.
