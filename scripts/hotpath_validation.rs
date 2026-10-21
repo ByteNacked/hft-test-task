@@ -49,8 +49,13 @@ impl<P: MDAdapter> MDAdapter for BenchAdapter<P> {
         received: ReceiveTime,
         rules: InstrumentRules,
         out: &mut DepthDiff,
+        #[cfg(feature = "bench-unsorted-diff")] scratch: &mut crate::md::DiffScratch,
     ) -> Result<(), ProtocolError> {
-        P::decode_diff_into(body, received, rules, out)
+        P::decode_diff_into(
+            body, received, rules, out,
+            #[cfg(feature = "bench-unsorted-diff")]
+            scratch,
+        )
     }
     #[cfg(feature = "bench-old-api")]
     fn decode_diff(
@@ -77,6 +82,8 @@ impl<P: MDAdapter> MDAdapter for BenchAdapter<P> {
             synced: Box::new(SyncedBook::new(rules)?),
             #[cfg(not(feature = "bench-old-api"))]
             incoming: Box::default(),
+            #[cfg(feature = "bench-unsorted-diff")]
+            scratch: Default::default(),
             books,
             state: FeedState::Connecting,
             sync_epoch: 0,

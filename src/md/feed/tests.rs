@@ -22,6 +22,7 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
         rules,
         synced: Box::new(SyncedBook::new(rules).unwrap()),
         incoming: Box::default(),
+        scratch: Default::default(),
         books,
         state: FeedState::Connecting,
         sync_epoch: 0,

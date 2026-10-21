@@ -4,15 +4,23 @@ use crate::{
     book::OrderBook,
     book::{self, BookStatus},
     config,
-    md::{DepthDiff, MDAdapter, ProtocolError, ReceiveTime, Snapshot},
+    md::{DepthDiff, DiffScratch, MDAdapter, ProtocolError, ReceiveTime, Snapshot},
     numeric::InstrumentRules,
     robot::{self, Bias},
 };
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
+type DecodeDiff = fn(
+    &[u8],
+    ReceiveTime,
+    InstrumentRules,
+    &mut DepthDiff,
+    &mut DiffScratch,
+) -> Result<(), ProtocolError>;
+
 struct Protocol {
-    diff: fn(&[u8], ReceiveTime, InstrumentRules, &mut DepthDiff) -> Result<(), ProtocolError>,
+    diff: DecodeDiff,
     snapshot: fn(&[u8], InstrumentRules) -> Result<Snapshot, ProtocolError>,
     metadata: fn(&[u8]) -> Result<InstrumentRules, ProtocolError>,
     diff_fixture: &'static [u8],
@@ -48,13 +56,21 @@ fn fixtures_flow_through_book_and_robot() {
     let receive = now;
     let mut readers = Vec::new();
     for protocol in protocols() {
+        let mut scratch = DiffScratch::default();
         let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
         let snapshot = (protocol.snapshot)(protocol.snapshot_fixture, rules).unwrap();
         let mut book = OrderBook::new(rules.tick_size()).unwrap();
         book.load_snapshot(&snapshot).unwrap();
         assert_eq!(book.event_time(), None);
         let mut diff = Box::<DepthDiff>::default();
-        (protocol.diff)(protocol.diff_fixture, receive, rules, &mut diff).unwrap();
+        (protocol.diff)(
+            protocol.diff_fixture,
+            receive,
+            rules,
+            &mut diff,
+            &mut scratch,
+        )
+        .unwrap();
         assert_eq!(diff.time.exchange_time(), 1_700_000_000_002);
         assert_eq!(
             (diff.first_id, diff.final_id, diff.previous_id),
@@ -83,9 +99,19 @@ fn fixtures_flow_through_book_and_robot() {
 fn corrupted_diff_fields_and_bounds_are_rejected() {
     let receive = Instant::now();
     for protocol in protocols() {
+        let mut scratch = DiffScratch::default();
         let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
         let mut diff = Box::<DepthDiff>::default();
-        assert!((protocol.diff)(protocol.invalid_fixture, receive, rules, &mut diff).is_err());
+        assert!(
+            (protocol.diff)(
+                protocol.invalid_fixture,
+                receive,
+                rules,
+                &mut diff,
+                &mut scratch
+            )
+            .is_err()
+        );
         let base: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
         for (field, value) in [
             ("s", json!("BTCUSDT")),
@@ -99,6 +125,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
             ("b", json!([["3500.01", "1"]])),
             ("b", json!([["3500", "0.0001"]])),
             ("b", json!([["3500", "1"], ["3500", "2"]])),
+            ("b", json!([["3500", "0"], ["3490", "1"], ["3500", "2"]])),
+            ("a", json!([["3501", "1"], ["3510", "1"], ["3501", "0"]])),
             ("a", json!([["3501", "-1"]])),
             ("b", json!([[3500, "1"]])),
             ("b", json!([["3500", "1", "extra"]])),
@@ -110,11 +138,21 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                     &serde_json::to_vec(&malformed).unwrap(),
                     receive,
                     rules,
-                    &mut diff
+                    &mut diff,
+                    &mut scratch
                 )
                 .is_err(),
                 "field={field}"
             );
+            // A rejected message must not poison duplicate detection for the next one.
+            (protocol.diff)(
+                protocol.diff_fixture,
+                receive,
+                rules,
+                &mut diff,
+                &mut scratch,
+            )
+            .unwrap();
         }
         for field in ["E", "T", "U", "u", "pu", "b", "a", "e", "s"] {
             let mut malformed = base.clone();
@@ -124,7 +162,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                     &serde_json::to_vec(&malformed).unwrap(),
                     receive,
                     rules,
-                    &mut diff
+                    &mut diff,
+                    &mut scratch
                 )
                 .is_err(),
                 "missing={field}"
@@ -137,7 +176,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                 &serde_json::to_vec(&malformed).unwrap(),
                 receive,
                 rules,
-                &mut diff
+                &mut diff,
+                &mut scratch
             )
             .is_err()
         );
@@ -146,7 +186,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                 &vec![b' '; config::MESSAGE_BYTES + 1],
                 receive,
                 rules,
-                &mut diff
+                &mut diff,
+                &mut scratch
             ),
             Err(ProtocolError::BodyTooLarge)
         ));
@@ -159,7 +200,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                 &serde_json::to_vec(&oversized).unwrap(),
                 receive,
                 rules,
-                &mut diff
+                &mut diff,
+                &mut scratch
             )
             .is_err()
         );
@@ -169,12 +211,13 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
             receive,
             rules,
             &mut diff,
+            &mut scratch,
         )
         .unwrap();
         assert_eq!(diff.bids.len(), config::DIFF_LEVELS);
         let mut trailing = protocol.diff_fixture.to_vec();
         trailing.extend_from_slice(b"{}");
-        assert!((protocol.diff)(&trailing, receive, rules, &mut diff).is_err());
+        assert!((protocol.diff)(&trailing, receive, rules, &mut diff, &mut scratch).is_err());
         for field in ["u", "b", "data"] {
             let value = if field == "data" {
                 &base[field]
@@ -185,7 +228,92 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
             let duplicate = base
                 .to_string()
                 .replacen(&member, &format!("{member},{member}"), 1);
-            assert!((protocol.diff)(duplicate.as_bytes(), receive, rules, &mut diff).is_err());
+            assert!(
+                (protocol.diff)(
+                    duplicate.as_bytes(),
+                    receive,
+                    rules,
+                    &mut diff,
+                    &mut scratch
+                )
+                .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn unordered_diffs_detect_retransmissions_and_conflicts_without_refreshing_book() {
+    use crate::md::{
+        AdapterError,
+        sync::{Applied, SyncedBook},
+    };
+    for protocol in protocols() {
+        let now = Instant::now();
+        let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
+        let mut scratch = DiffScratch::default();
+        let mut incoming = Box::<DepthDiff>::default();
+        let mut synced = SyncedBook::new(rules).unwrap();
+        synced
+            .load(&(protocol.snapshot)(protocol.snapshot_fixture, rules).unwrap())
+            .unwrap();
+        let mut message: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
+        // Same price on different sides is legal in a diff: remove ask, add bid.
+        message["data"]["b"] = json!([["3492", "2"], ["3490", "1"], ["3491", "3"]]);
+        message["data"]["a"] = json!([["3511", "2"], ["3492", "0"], ["3510", "3"]]);
+        for side in ["b", "a"] {
+            let mut bad = message.clone();
+            let repeated = bad["data"][side][0].clone();
+            bad["data"][side].as_array_mut().unwrap().push(repeated);
+            assert!(matches!(
+                (protocol.diff)(
+                    &serde_json::to_vec(&bad).unwrap(),
+                    now,
+                    rules,
+                    &mut incoming,
+                    &mut scratch
+                ),
+                Err(ProtocolError::Book(book::BookError::DuplicatePrice))
+            ));
+            // Retry the same prices without the duplicate, using the same scratch.
+            (protocol.diff)(
+                &serde_json::to_vec(&message).unwrap(),
+                now,
+                rules,
+                &mut incoming,
+                &mut scratch,
+            )
+            .unwrap();
+        }
+        assert_eq!(synced.apply(&mut incoming).unwrap(), Applied::Update);
+        let bids: Vec<_> = synced.book.bids().collect();
+        let asks: Vec<_> = synced.book.asks().collect();
+        for conflict in [false, true] {
+            for side in ["b", "a"] {
+                message["data"][side].as_array_mut().unwrap().rotate_left(1);
+            }
+            if conflict {
+                message["data"]["b"][0][1] = json!("4");
+            }
+            (protocol.diff)(
+                &serde_json::to_vec(&message).unwrap(),
+                now + Duration::from_secs(1),
+                rules,
+                &mut incoming,
+                &mut scratch,
+            )
+            .unwrap();
+            if conflict {
+                assert!(matches!(
+                    synced.apply(&mut incoming),
+                    Err(AdapterError::Sequence("conflicting duplicate"))
+                ));
+            } else {
+                assert_eq!(synced.apply(&mut incoming).unwrap(), Applied::Duplicate);
+            }
+            assert_eq!(synced.book.event_time().unwrap().platform_time(), now);
+            assert_eq!(synced.book.bids().collect::<Vec<_>>(), bids);
+            assert_eq!(synced.book.asks().collect::<Vec<_>>(), asks);
         }
     }
 }
@@ -194,6 +322,7 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
 fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
     use crate::md::sync::{Applied, SyncedBook};
     for protocol in protocols() {
+        let mut scratch = DiffScratch::default();
         let now = Instant::now();
         let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
         let mut synced = SyncedBook::new(rules).unwrap();
@@ -201,7 +330,14 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
             .load(&(protocol.snapshot)(protocol.snapshot_fixture, rules).unwrap())
             .unwrap();
         let mut incoming = Box::<DepthDiff>::default();
-        (protocol.diff)(protocol.diff_fixture, now, rules, &mut incoming).unwrap();
+        (protocol.diff)(
+            protocol.diff_fixture,
+            now,
+            rules,
+            &mut incoming,
+            &mut scratch,
+        )
+        .unwrap();
         assert_eq!(synced.apply(&mut incoming).unwrap(), Applied::Update);
 
         let mut next: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
@@ -213,7 +349,8 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
                     &serde_json::to_vec(&bad).unwrap(),
                     now,
                     rules,
-                    &mut incoming
+                    &mut incoming,
+                    &mut scratch
                 )
                 .is_err()
             );
@@ -223,6 +360,7 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
                 now,
                 rules,
                 &mut incoming,
+                &mut scratch,
             )
             .unwrap();
             assert_eq!(synced.apply(&mut incoming).unwrap(), Applied::Duplicate);
@@ -238,6 +376,7 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
                 now,
                 rules,
                 &mut incoming,
+                &mut scratch,
             )
             .unwrap();
             assert_eq!(synced.apply(&mut incoming).unwrap(), Applied::Update);
@@ -324,6 +463,7 @@ fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
     use crate::book::BookError;
     use crate::numeric::NumericError;
     for protocol in protocols() {
+        let mut scratch = DiffScratch::default();
         let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
         let mut incoming = Box::<DepthDiff>::default();
         let now = Instant::now();
@@ -354,10 +494,17 @@ fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
             let mut bad: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
             bad["data"]["a"] = json!([[price, quantity]]);
             assert!(
-                matches!((protocol.diff)(&serde_json::to_vec(&bad).unwrap(), now, rules, &mut incoming),
+                matches!((protocol.diff)(&serde_json::to_vec(&bad).unwrap(), now, rules, &mut incoming, &mut scratch),
                 Err(ProtocolError::Book(actual)) if actual == error)
             );
-            (protocol.diff)(protocol.diff_fixture, now, rules, &mut incoming).unwrap();
+            (protocol.diff)(
+                protocol.diff_fixture,
+                now,
+                rules,
+                &mut incoming,
+                &mut scratch,
+            )
+            .unwrap();
         }
         // The last valid slot is accepted; equivalent decimal spellings are duplicates.
         let mut valid: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
@@ -367,6 +514,7 @@ fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
             now,
             rules,
             &mut incoming,
+            &mut scratch,
         )
         .unwrap();
         assert_eq!(incoming.asks[0].index(), config::BOOK_PRICE_SLOTS - 1);
@@ -376,7 +524,8 @@ fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
                 &serde_json::to_vec(&valid).unwrap(),
                 now,
                 rules,
-                &mut incoming
+                &mut incoming,
+                &mut scratch
             ),
             Err(ProtocolError::Book(BookError::DuplicatePrice))
         ));

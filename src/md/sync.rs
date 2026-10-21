@@ -45,8 +45,18 @@ impl SyncedBook {
     }
     pub(crate) fn apply(&mut self, diff: &mut Box<DepthDiff>) -> Result<Applied, AdapterError> {
         if self.ready {
-            let last = &self.last;
+            let last = &mut self.last;
             if diff.final_id == last.final_id {
+                // Normal updates preserve wire order. Canonicalize only retransmissions
+                // so reordered levels still compare exactly, without hashes or allocation.
+                for side in [
+                    &mut diff.bids,
+                    &mut diff.asks,
+                    &mut last.bids,
+                    &mut last.asks,
+                ] {
+                    side.sort_unstable_by_key(|level| level.index());
+                }
                 // Local receive timestamps differ on retransmission. Exchange time and
                 // normalized levels/IDs must match exactly; otherwise this is a conflict.
                 if diff.first_id == last.first_id

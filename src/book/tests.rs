@@ -19,7 +19,6 @@ fn updates_preserve_distant_levels_and_absolute_quantities() {
         .bids
         .extend([indexed(99, 2 * SCALE), indexed(10, SCALE), indexed(20, 0)]);
     change.asks.extend([indexed(101, 0), indexed(200, SCALE)]);
-    crate::md::normalize_diff(&mut change).unwrap();
     book.apply_diff(&change).unwrap();
     assert_eq!(book.bids().next().unwrap(), level(99, 2 * SCALE));
     assert_eq!(book.bids().last().unwrap().price.raw(), 10);

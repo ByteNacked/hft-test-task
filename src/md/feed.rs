@@ -109,6 +109,7 @@ pub(crate) async fn run<P: MDAdapter>(
         rules,
         synced: Box::new(SyncedBook::new(rules)?),
         incoming: Box::default(),
+        scratch: Default::default(),
         books,
         state: FeedState::Connecting,
         sync_epoch: 0,
@@ -143,6 +144,7 @@ struct Runner<P> {
     rules: InstrumentRules,
     synced: Box<SyncedBook>,
     incoming: Box<DepthDiff>,
+    scratch: super::DiffScratch,
     books: BookPublisher,
     state: FeedState,
     sync_epoch: u64,
@@ -292,6 +294,7 @@ impl<P: MDAdapter> Runner<P> {
             frame.received,
             self.rules,
             &mut self.incoming,
+            &mut self.scratch,
         )?;
         let final_id = self.incoming.final_id;
         match self.synced.apply(&mut self.incoming)? {

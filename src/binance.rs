@@ -8,7 +8,7 @@ use crate::{
 };
 use crate::{
     config,
-    md::{self, DepthDiff, ProtocolError, ReceiveTime, Snapshot},
+    md::{self, DepthDiff, DiffScratch, ProtocolError, ReceiveTime, Snapshot},
     numeric::InstrumentRules,
 };
 use serde::Deserialize;
@@ -67,8 +67,9 @@ impl MDAdapter for BinanceAdapter {
         receive: ReceiveTime,
         rules: InstrumentRules,
         out: &mut DepthDiff,
+        scratch: &mut DiffScratch,
     ) -> Result<(), ProtocolError> {
-        md::decode_diff_into::<true>(body, receive, rules, out)
+        md::decode_diff_into::<true>(body, receive, rules, out, scratch)
     }
     fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError> {
         md::check_body(body, config::MESSAGE_BYTES)?;

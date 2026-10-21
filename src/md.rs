@@ -104,19 +104,52 @@ pub(crate) fn check_body(body: &[u8], limit: usize) -> Result<(), ProtocolError>
         Ok(())
     }
 }
-pub(crate) fn normalize_diff(diff: &mut DepthDiff) -> Result<(), ProtocolError> {
-    if diff.first_id > diff.final_id || diff.previous_id >= diff.final_id {
-        return Err(ProtocolError::UpdateIds);
-    }
-    diff.bids
-        .sort_unstable_by_key(|l| std::cmp::Reverse(l.index()));
-    diff.asks.sort_unstable_by_key(|l| l.index());
-    for side in [&diff.bids, &diff.asks] {
-        if side.windows(2).any(|p| p[0].index() == p[1].index()) {
-            return Err(BookError::DuplicatePrice.into());
+/// Reusable duplicate-price bitmap, owned by one adapter; allocated only at startup.
+pub struct DiffScratch {
+    seen: Box<[u64]>,
+}
+impl Default for DiffScratch {
+    fn default() -> Self {
+        Self {
+            seen: vec![0; config::BOOK_PRICE_SLOTS.div_ceil(64)].into_boxed_slice(),
         }
     }
-    Ok(())
+}
+impl DiffScratch {
+    fn validate(&mut self, diff: &DepthDiff) -> Result<(), ProtocolError> {
+        if diff.first_id > diff.final_id || diff.previous_id >= diff.final_id {
+            return Err(ProtocolError::UpdateIds);
+        }
+        for (side, descending) in [(&diff.bids, true), (&diff.asks, false)] {
+            // Strict wire order already proves uniqueness (also covers 0/1 levels).
+            if side.windows(2).all(|pair| {
+                if descending {
+                    pair[0].index() > pair[1].index()
+                } else {
+                    pair[0].index() < pair[1].index()
+                }
+            }) {
+                continue;
+            }
+            let duplicate = side.iter().any(|level| {
+                let index = level.index();
+                let word = &mut self.seen[index / 64];
+                let bit = 1 << (index % 64);
+                let duplicate = *word & bit != 0;
+                *word |= bit;
+                duplicate
+            });
+            // All indices were checked during decoding. Clear touched words even on
+            // error; both sides and subsequent messages reuse the same clean bitmap.
+            for level in side {
+                self.seen[level.index() / 64] = 0;
+            }
+            if duplicate {
+                return Err(BookError::DuplicatePrice.into());
+            }
+        }
+        Ok(())
+    }
 }
 pub(crate) fn normalize_snapshot(
     mut snapshot: Snapshot,

@@ -1,6 +1,6 @@
 //! Shared combined-stream schema. Seeds write levels into reusable diff storage;
 //! RawValue would allocate serde_json scratch for nested arrays on every message.
-use super::{DepthDiff, EventTime, ProtocolError, ReceiveTime, normalize_diff};
+use super::{DepthDiff, DiffScratch, EventTime, ProtocolError, ReceiveTime};
 use crate::{
     book::{BookError, DiffSide, IndexedLevel, Level},
     config,
@@ -181,6 +181,7 @@ pub(crate) fn decode_into<const BINANCE: bool>(
     received: ReceiveTime,
     rules: InstrumentRules,
     out: &mut DepthDiff,
+    scratch: &mut DiffScratch,
 ) -> Result<(), ProtocolError> {
     out.bids.clear();
     out.asks.clear();
@@ -203,7 +204,7 @@ pub(crate) fn decode_into<const BINANCE: bool>(
     }
     super::validate_timestamp(header.transaction_time)?;
     out.time = EventTime::new(header.exchange_time, received)?;
-    normalize_diff(out)
+    scratch.validate(out)
 }
 
 // Preserve domain errors across Serde so range failures still produce ERROR + Offline.
