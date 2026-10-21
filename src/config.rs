@@ -30,7 +30,7 @@ pub const ROBOT_LEVELS: usize = 5;
 pub const DEFAULT_MAX_AGE_MS: u64 = 500;
 pub const DEFAULT_MAX_SKEW_MS: u64 = 250;
 pub const DEFAULT_MIN_DEPTH_QTY: Qty = Qty::ONE;
-pub const DEFAULT_THRESHOLD_BPS: u32 = 5;
+pub const DEFAULT_THRESHOLD_BPS: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[error("invalid configuration: {0}")]

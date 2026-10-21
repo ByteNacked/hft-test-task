@@ -12,11 +12,11 @@ fn directions_threshold_equality_and_exact_explanation() {
     let now = Instant::now();
     let b = view(&book(now, 20_000, 200_000_000, 16));
     for (mid, bias) in [
-        (19_989, Bias::LongBiasAster),
-        (19_990, Bias::Hold),
+        (19_995, Bias::LongBiasAster),
+        (19_996, Bias::Hold),
         (20_000, Bias::Hold),
-        (20_010, Bias::Hold),
-        (20_011, Bias::ShortBiasAster),
+        (20_004, Bias::Hold),
+        (20_005, Bias::ShortBiasAster),
     ] {
         let a = view(&book(now, mid, 200_000_000, 16));
         let d = evaluate(b.view(), a.view(), &Default::default(), now);

@@ -36,7 +36,7 @@ Rust stable, версия зафиксирована в `rust-toolchain.toml`. C
 | `--max-age-ms` | `HFT_MAX_AGE_MS` | 500 |
 | `--max-skew-ms` | `HFT_MAX_SKEW_MS` | 250 |
 | `--min-depth-qty` | `HFT_MIN_DEPTH_QTY` | 1 ETH на каждую сторону |
-| `--threshold-bps` | `HFT_THRESHOLD_BPS` | 5 |
+| `--threshold-bps` | `HFT_THRESHOLD_BPS` | 2 |
 
 Параметры проверяются перед подключением. SIGINT/SIGTERM останавливают все потоки и сбрасывают очередь логов. Exit code: 0 — штатный выход, 1 — ошибка конфигурации/сервиса, 2 — ошибка синтаксиса CLI.
 

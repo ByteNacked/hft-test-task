@@ -1,7 +1,7 @@
 use crate::{
     book::{BookReader, BookStatus, BookView},
     config::{REPORT_INTERVAL, ROBOT_LEVELS, RobotConfig},
-    numeric::SCALE,
+    numeric::{Price, SCALE},
 };
 use std::{
     sync::{
@@ -21,6 +21,8 @@ pub enum Bias {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BookNumbers {
     pub status: BookStatus,
+    pub best_bid: Option<Price>,
+    pub best_ask: Option<Price>,
     /// Midpoint = mid2_raw / (2 * 10^9).
     pub mid2_raw: Option<i128>,
     /// Each volume is raw ETH / 10^9; None when fewer than five levels exist.
@@ -46,6 +48,8 @@ impl BookNumbers {
         };
         Self {
             status: view.status,
+            best_bid: bid,
+            best_ask: ask,
             mid2_raw: bid
                 .zip(ask)
                 .map(|(b, a)| i128::from(b.raw()) + i128::from(a.raw())),
@@ -130,6 +134,12 @@ pub fn evaluate(
 impl std::fmt::Display for BookNumbers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.status)?;
+        if let Some(bid) = self.best_bid {
+            write!(f, " best_bid={bid}")?;
+        }
+        if let Some(ask) = self.best_ask {
+            write!(f, " best_ask={ask}")?;
+        }
         if let Some(mid) = self.mid2_raw {
             // A midpoint may need ten decimal places, even though prices have nine.
             let scale = 2 * i128::from(SCALE);
