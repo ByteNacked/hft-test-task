@@ -1,5 +1,5 @@
 //! Fixed price slots and two bitmap levels; all storage is allocated at startup.
-use super::Level;
+use super::{IndexedLevel, Level};
 use crate::{
     config::{BOOK_PRICE_SLOTS, DIFF_LEVELS},
     numeric::{Price, Qty},
@@ -98,14 +98,14 @@ impl Side {
             self.set((level.price.raw() / tick.raw()) as usize, level.qty);
         }
     }
-    pub(super) fn apply(&mut self, levels: &[Level], tick: Price) {
+    pub(super) fn apply(&mut self, levels: &[IndexedLevel]) {
         for (i, level) in levels.iter().enumerate() {
-            self.undo[i] = self.set((level.price.raw() / tick.raw()) as usize, level.qty);
+            self.undo[i] = self.set(level.index, level.qty);
         }
     }
-    pub(super) fn rollback(&mut self, levels: &[Level], tick: Price) {
+    pub(super) fn rollback(&mut self, levels: &[IndexedLevel]) {
         for (i, level) in levels.iter().enumerate() {
-            self.set((level.price.raw() / tick.raw()) as usize, self.undo[i]);
+            self.set(level.index, self.undo[i]);
         }
     }
 }

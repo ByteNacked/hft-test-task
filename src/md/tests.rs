@@ -318,3 +318,67 @@ fn snapshot_limits_and_metadata_validation() {
         ));
     }
 }
+
+#[test]
+fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
+    use crate::book::BookError;
+    use crate::numeric::NumericError;
+    for protocol in protocols() {
+        let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
+        let mut incoming = Box::<DepthDiff>::default();
+        let now = Instant::now();
+        let max = crate::numeric::Price::from_raw(
+            (config::BOOK_PRICE_SLOTS - 1) as i64 * rules.tick_size().raw(),
+        )
+        .unwrap();
+        for (price, quantity, error) in [
+            (
+                "3500.01",
+                "1",
+                BookError::Numeric(NumericError::InvalidStep),
+            ),
+            (
+                "3500",
+                "0.0001",
+                BookError::Numeric(NumericError::InvalidStep),
+            ),
+            (
+                "100000",
+                "0",
+                BookError::PriceRange {
+                    price: "100000".parse().unwrap(),
+                    max_price: max,
+                },
+            ),
+        ] {
+            let mut bad: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
+            bad["data"]["a"] = json!([[price, quantity]]);
+            assert!(
+                matches!((protocol.diff)(&serde_json::to_vec(&bad).unwrap(), now, rules, &mut incoming),
+                Err(ProtocolError::Book(actual)) if actual == error)
+            );
+            (protocol.diff)(protocol.diff_fixture, now, rules, &mut incoming).unwrap();
+        }
+        // The last valid slot is accepted; equivalent decimal spellings are duplicates.
+        let mut valid: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
+        valid["data"]["a"] = json!([[max.to_string(), "1"]]);
+        (protocol.diff)(
+            &serde_json::to_vec(&valid).unwrap(),
+            now,
+            rules,
+            &mut incoming,
+        )
+        .unwrap();
+        assert_eq!(incoming.asks[0].index(), config::BOOK_PRICE_SLOTS - 1);
+        valid["data"]["a"] = json!([["3500", "1"], ["3500.000", "2"]]);
+        assert!(matches!(
+            (protocol.diff)(
+                &serde_json::to_vec(&valid).unwrap(),
+                now,
+                rules,
+                &mut incoming
+            ),
+            Err(ProtocolError::Book(BookError::DuplicatePrice))
+        ));
+    }
+}

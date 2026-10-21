@@ -209,7 +209,11 @@ impl<P: MDAdapter> Runner<P> {
         }
     }
     fn log_recovery(error: &AdapterError) {
-        if matches!(error, AdapterError::Book(BookError::PriceRange { .. })) {
+        if matches!(
+            error,
+            AdapterError::Book(BookError::PriceRange { .. })
+                | AdapterError::Protocol(ProtocolError::Book(BookError::PriceRange { .. }))
+        ) {
             tracing::error!(venue=P::NAME, %error, "book price range exceeded; increase BOOK_PRICE_SLOTS and restart");
         } else {
             tracing::warn!(venue=P::NAME, %error, "market-data recovery");

@@ -104,15 +104,18 @@ pub(crate) fn check_body(body: &[u8], limit: usize) -> Result<(), ProtocolError>
         Ok(())
     }
 }
-pub(crate) fn normalize_diff(
-    diff: &mut DepthDiff,
-    rules: InstrumentRules,
-) -> Result<(), ProtocolError> {
+pub(crate) fn normalize_diff(diff: &mut DepthDiff) -> Result<(), ProtocolError> {
     if diff.first_id > diff.final_id || diff.previous_id >= diff.final_id {
         return Err(ProtocolError::UpdateIds);
     }
-    prepare(&mut diff.bids, true, rules)?;
-    prepare(&mut diff.asks, false, rules)?;
+    diff.bids
+        .sort_unstable_by_key(|l| std::cmp::Reverse(l.index()));
+    diff.asks.sort_unstable_by_key(|l| l.index());
+    for side in [&diff.bids, &diff.asks] {
+        if side.windows(2).any(|p| p[0].index() == p[1].index()) {
+            return Err(BookError::DuplicatePrice.into());
+        }
+    }
     Ok(())
 }
 pub(crate) fn normalize_snapshot(

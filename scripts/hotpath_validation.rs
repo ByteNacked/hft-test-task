@@ -103,12 +103,14 @@ impl<P: MDAdapter> MDAdapter for BenchAdapter<P> {
         for begin in (1000..self.depth).step_by(4096) {
             let mut extra = diff(std::time::Instant::now());
             for i in begin..(begin + 4096).min(self.depth) {
-                extra
-                    .bids
-                    .push(level(3490 * SCALE - i as i64 * 10_000_000, SCALE));
-                extra
-                    .asks
-                    .push(level(3510 * SCALE + i as i64 * 10_000_000, SCALE));
+                let bid = level(3490 * SCALE - i as i64 * 10_000_000, SCALE);
+                let ask = level(3510 * SCALE + i as i64 * 10_000_000, SCALE);
+                #[cfg(feature = "bench-indexed-diff")]
+                let bid = crate::book::IndexedLevel::new(bid, rules)?;
+                #[cfg(feature = "bench-indexed-diff")]
+                let ask = crate::book::IndexedLevel::new(ask, rules)?;
+                extra.bids.push(bid);
+                extra.asks.push(ask);
             }
             runner.synced.book.apply_diff(&extra)?;
         }

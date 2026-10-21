@@ -31,8 +31,8 @@ fn publication_limits_depth_and_promotes_retained_levels_after_deletion() {
 
     let later = now + std::time::Duration::from_millis(1);
     let mut update = diff(later);
-    update.bids.push(level(99, 0));
-    update.asks.push(level(101, 0));
+    update.bids.push(indexed(99, 0));
+    update.asks.push(indexed(101, 0));
     book.apply_diff(&update).unwrap();
     writer.publish(&book, BookStatus::Online).unwrap();
     assert!(reader.update());
@@ -97,7 +97,7 @@ fn held_snapshot_is_stable_and_offline_precedes_latest_recovery() {
     assert_eq!(reader.view().status, BookStatus::Offline);
     // A newer book published while Hold is handled wins over the held recovery.
     let mut update = diff(now);
-    update.bids.push(level(99, 123));
+    update.bids.push(indexed(99, 123));
     book.apply_diff(&update).unwrap();
     writer.publish(&book, BookStatus::Online).unwrap();
     assert!(reader.update());
@@ -112,7 +112,7 @@ fn slow_reader_gets_latest_version_without_blocking_publication() {
     let (mut writer, mut reader) = book::channel(16, &EPOCH).unwrap();
     for n in 1..=100 {
         let mut update = diff(now);
-        update.bids.push(level(99, n));
+        update.bids.push(indexed(99, n));
         book.apply_diff(&update).unwrap();
         writer.publish(&book, BookStatus::Online).unwrap();
     }
@@ -174,8 +174,8 @@ fn concurrent_slow_reader_sees_complete_versions() {
     let producer = thread::spawn(move || {
         for n in 1..=2000 {
             let mut update = diff(now);
-            update.bids.push(level(99, n));
-            update.asks.push(level(101, n));
+            update.bids.push(indexed(99, n));
+            update.asks.push(indexed(101, n));
             book.apply_diff(&update).unwrap();
             writer.publish(&book, BookStatus::Online).unwrap();
         }

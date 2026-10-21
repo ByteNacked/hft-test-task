@@ -7,7 +7,7 @@ fn event(now: Instant, first: u64, last: u64, previous: u64, quantity: i64) -> B
     event.first_id = first;
     event.final_id = last;
     event.previous_id = previous;
-    event.bids.push(level(99, quantity));
+    event.bids.push(indexed(99, quantity));
     Box::new(event)
 }
 #[test]

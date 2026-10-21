@@ -17,6 +17,9 @@ pub fn level(price_raw: i64, qty_raw: i64) -> Level {
         qty: qty(qty_raw),
     }
 }
+pub fn indexed(price_raw: i64, qty_raw: i64) -> crate::book::IndexedLevel {
+    crate::book::IndexedLevel::new(level(price_raw, qty_raw), rules()).unwrap()
+}
 pub fn rules() -> InstrumentRules {
     InstrumentRules::new(price(1), qty(1)).unwrap()
 }

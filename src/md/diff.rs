@@ -1,7 +1,11 @@
 //! Shared combined-stream schema. Seeds write levels into reusable diff storage;
 //! RawValue would allocate serde_json scratch for nested arrays on every message.
-use super::{DepthDiff, EventTime, LevelsSeed, ProtocolError, ReceiveTime, normalize_diff};
-use crate::{config, numeric::InstrumentRules};
+use super::{DepthDiff, EventTime, ProtocolError, ReceiveTime, normalize_diff};
+use crate::{
+    book::{BookError, DiffSide, IndexedLevel, Level},
+    config,
+    numeric::InstrumentRules,
+};
 use serde::{
     Deserialize,
     de::{DeserializeSeed, Error, IgnoredAny, MapAccess, Visitor},
@@ -60,7 +64,11 @@ macro_rules! read_field {
     }};
 }
 
-struct DataSeed<'a, const BINANCE: bool>(&'a mut DepthDiff);
+struct DataSeed<'a, const BINANCE: bool>(
+    &'a mut DepthDiff,
+    InstrumentRules,
+    &'a mut Option<BookError>,
+);
 impl<'de, const BINANCE: bool> DeserializeSeed<'de> for DataSeed<'_, BINANCE> {
     type Value = Header<'de>;
     fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
@@ -94,14 +102,14 @@ impl<'de, const BINANCE: bool> Visitor<'de> for DataSeed<'_, BINANCE> {
                     if bids {
                         return Err(A::Error::duplicate_field("b"));
                     }
-                    map.next_value_seed(LevelsSeed(&mut self.0.bids))?;
+                    map.next_value_seed(DiffLevelsSeed(&mut self.0.bids, self.1, self.2))?;
                     bids = true;
                 }
                 Field::Asks => {
                     if asks {
                         return Err(A::Error::duplicate_field("a"));
                     }
-                    map.next_value_seed(LevelsSeed(&mut self.0.asks))?;
+                    map.next_value_seed(DiffLevelsSeed(&mut self.0.asks, self.1, self.2))?;
                     asks = true;
                 }
                 _ => {
@@ -129,7 +137,11 @@ impl<'de, const BINANCE: bool> Visitor<'de> for DataSeed<'_, BINANCE> {
     }
 }
 
-struct WrapperSeed<'a, const BINANCE: bool>(&'a mut DepthDiff);
+struct WrapperSeed<'a, const BINANCE: bool>(
+    &'a mut DepthDiff,
+    InstrumentRules,
+    &'a mut Option<BookError>,
+);
 impl<'de, const BINANCE: bool> DeserializeSeed<'de> for WrapperSeed<'_, BINANCE> {
     type Value = (&'de str, Header<'de>);
     fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
@@ -150,7 +162,7 @@ impl<'de, const BINANCE: bool> Visitor<'de> for WrapperSeed<'_, BINANCE> {
                     if data.is_some() {
                         return Err(A::Error::duplicate_field("data"));
                     }
-                    data = Some(map.next_value_seed(DataSeed::<BINANCE>(self.0))?);
+                    data = Some(map.next_value_seed(DataSeed::<BINANCE>(self.0, self.1, self.2))?);
                 }
                 _ => {
                     map.next_value::<IgnoredAny>()?;
@@ -174,7 +186,12 @@ pub(crate) fn decode_into<const BINANCE: bool>(
     out.asks.clear();
     super::check_body(body, config::MESSAGE_BYTES)?;
     let mut decoder = serde_json::Deserializer::from_slice(body);
-    let (stream, header) = WrapperSeed::<BINANCE>(out).deserialize(&mut decoder)?;
+    let mut level_error = None;
+    let (stream, header) = WrapperSeed::<BINANCE>(out, rules, &mut level_error)
+        .deserialize(&mut decoder)
+        .map_err(|error| {
+            level_error.map_or_else(|| ProtocolError::Json(error), ProtocolError::Book)
+        })?;
     decoder.end()?;
     if stream != config::STREAM
         || header.event != "depthUpdate"
@@ -186,5 +203,32 @@ pub(crate) fn decode_into<const BINANCE: bool>(
     }
     super::validate_timestamp(header.transaction_time)?;
     out.time = EventTime::new(header.exchange_time, received)?;
-    normalize_diff(out, rules)
+    normalize_diff(out)
+}
+
+// Preserve domain errors across Serde so range failures still produce ERROR + Offline.
+struct DiffLevelsSeed<'a>(&'a mut DiffSide, InstrumentRules, &'a mut Option<BookError>);
+impl<'de> DeserializeSeed<'de> for DiffLevelsSeed<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        d.deserialize_seq(self)
+    }
+}
+impl<'de> Visitor<'de> for DiffLevelsSeed<'_> {
+    type Value = ();
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("bounded array of price/quantity pairs")
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        while let Some(level) = seq.next_element::<Level>()? {
+            let indexed = IndexedLevel::new(level, self.1).map_err(|error| {
+                *self.2 = Some(error);
+                A::Error::custom(error)
+            })?;
+            self.0
+                .try_push(indexed)
+                .map_err(|_| A::Error::custom("too many levels"))?;
+        }
+        Ok(())
+    }
 }

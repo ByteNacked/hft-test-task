@@ -24,7 +24,39 @@ impl<'de> Deserialize<'de> for Level {
         Ok(Self { price, qty })
     }
 }
-pub type DiffSide = ArrayVec<Level, DIFF_LEVELS>;
+/// A diff level checked against its feed's instrument rules and price-slot limit.
+/// Keeps the same 16-byte footprint as Level; the price is reconstructed only for readers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexedLevel {
+    index: usize,
+    pub qty: Qty,
+}
+impl IndexedLevel {
+    pub fn new(level: Level, rules: InstrumentRules) -> Result<Self, BookError> {
+        let tick = rules.tick_size().raw();
+        let index = level.price.raw() / tick;
+        // The product is <= price, so cannot overflow. Division is performed once.
+        if index * tick != level.price.raw() {
+            return Err(NumericError::InvalidStep.into());
+        }
+        rules.validate_qty(level.qty)?;
+        if index >= BOOK_PRICE_SLOTS as i64 {
+            return Err(BookError::PriceRange {
+                price: level.price,
+                // This bound is below the rejected price, hence fits i64.
+                max_price: Price::from_raw((BOOK_PRICE_SLOTS - 1) as i64 * tick)?,
+            });
+        }
+        Ok(Self {
+            index: index as usize,
+            qty: level.qty,
+        })
+    }
+    pub(crate) fn index(self) -> usize {
+        self.index
+    }
+}
+pub type DiffSide = ArrayVec<IndexedLevel, DIFF_LEVELS>;
 pub type SnapshotSide = ArrayVec<Level, SNAPSHOT_LEVELS>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,17 +153,16 @@ impl OrderBook {
         self.event_time = None;
         Ok(())
     }
-    /// Normalized input has unique prices. No reader observes this mutable book.
+    /// Input is decoded with this book's instrument rules and has unique indices.
+    /// No reader observes this mutable book.
     pub(crate) fn apply_diff(&mut self, diff: &DepthDiff) -> Result<(), BookError> {
         let coverage = self.coverage.ok_or(BookError::NoSnapshot)?;
-        self.check_prices(&diff.bids)?;
-        self.check_prices(&diff.asks)?;
-        self.bids.apply(&diff.bids, self.tick_size);
-        self.asks.apply(&diff.asks, self.tick_size);
+        self.bids.apply(&diff.bids);
+        self.asks.apply(&diff.asks);
         let result = self.validate(coverage);
         if result.is_err() {
-            self.bids.rollback(&diff.bids, self.tick_size);
-            self.asks.rollback(&diff.asks, self.tick_size);
+            self.bids.rollback(&diff.bids);
+            self.asks.rollback(&diff.asks);
         } else {
             self.event_time = Some(diff.time);
         }

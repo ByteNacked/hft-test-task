@@ -32,24 +32,33 @@ fn parse_exact(value: &str) -> Result<Fp, NumericError> {
     if value.is_empty() || value.len() > MAX_NUMBER_LEN {
         return Err(NumericError::InvalidDecimal);
     }
-    let mut dot = None;
+    let mut raw = 0_i64;
+    let mut decimal = false;
+    let mut fractional_digits = 0;
+    let mut lost_precision = false;
     for (index, byte) in value.bytes().enumerate() {
-        if byte == b'.' && dot.is_none() && index > 0 && index + 1 < value.len() {
-            dot = Some(index);
-        } else if !byte.is_ascii_digit() {
-            return Err(NumericError::InvalidDecimal);
+        match byte {
+            b'0'..=b'9' => {
+                if decimal && fractional_digits == 9 {
+                    lost_precision |= byte != b'0';
+                } else {
+                    raw = raw
+                        .checked_mul(10)
+                        .and_then(|n| n.checked_add(i64::from(byte - b'0')))
+                        .ok_or(NumericError::Overflow)?;
+                    fractional_digits += u32::from(decimal);
+                }
+            }
+            b'.' if !decimal && index > 0 && index + 1 < value.len() => decimal = true,
+            _ => return Err(NumericError::InvalidDecimal),
         }
     }
-    let trimmed = if let Some(index) = dot {
-        let end = value.trim_end_matches('0').len();
-        if end - index - 1 > 9 {
-            return Err(precision_loss("parse"));
-        }
-        &value[..if end == index + 1 { index } else { end }]
-    } else {
-        value
-    };
-    Fp::from_str_exact(trimmed).map_err(|_| NumericError::Overflow)
+    if lost_precision {
+        return Err(precision_loss("parse"));
+    }
+    raw.checked_mul(10_i64.pow(9 - fractional_digits))
+        .map(Fp::from_bits)
+        .ok_or(NumericError::Overflow)
 }
 
 macro_rules! quantity {
@@ -131,6 +140,9 @@ impl InstrumentRules {
     }
     pub fn validate(self, price: Price, qty: Qty) -> Result<(), NumericError> {
         price.check_step(self.tick_size)?;
+        self.validate_qty(qty)
+    }
+    pub(crate) fn validate_qty(self, qty: Qty) -> Result<(), NumericError> {
         qty.check_step(self.lot_size)
     }
 }
