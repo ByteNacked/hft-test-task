@@ -30,6 +30,7 @@ enum Fault {
     Close,
     Eof,
     Oversized,
+    PriceRange,
 }
 struct Rig {
     _service_guard: tokio::sync::MutexGuard<'static, ()>,
@@ -149,6 +150,11 @@ impl Rig {
     }
     async fn fault(&mut self, venue: Venue, fault: Fault) {
         match fault {
+            Fault::PriceRange => {
+                self.socket(venue).send(Message::Text(
+                    r#"{"stream":"ethusdt@depth@100ms","data":{"e":"depthUpdate","s":"ETHUSDT","E":1700000000002,"T":1700000000001,"U":103,"u":104,"pu":102,"b":[],"a":[["100000","1"]]}}"#.into()
+                )).await.unwrap();
+            }
             Fault::Gap => self.send(venue, 103, 104, 101).await,
             Fault::Malformed => self
                 .socket(venue)
@@ -209,6 +215,7 @@ async fn any_feed_fault_holds_entire_instrument_until_new_snapshot_replay() {
             Fault::Close,
             Fault::Eof,
             Fault::Oversized,
+            Fault::PriceRange,
         ] {
             let mut rig = Rig::new(config::SYNC_MESSAGES).await;
             let online = rig.ready().await;

@@ -2,6 +2,7 @@
 use crate::{
     book::OrderBook,
     md::{AdapterError, DepthDiff, Snapshot},
+    numeric::InstrumentRules,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -18,9 +19,9 @@ pub(crate) struct SyncedBook {
     ready: bool,
 }
 impl SyncedBook {
-    pub(crate) fn new() -> Result<Self, AdapterError> {
+    pub(crate) fn new(rules: InstrumentRules) -> Result<Self, AdapterError> {
         Ok(Self {
-            book: OrderBook::new(crate::config::BOOK_LEVELS)?,
+            book: OrderBook::new(rules.tick_size())?,
             snapshot_id: None,
             last: Box::default(),
             ready: false,

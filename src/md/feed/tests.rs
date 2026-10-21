@@ -20,7 +20,7 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
         settings: Settings::for_adapter::<crate::binance::BinanceAdapter>(),
         client: reqwest::Client::new(),
         rules,
-        synced: Box::new(SyncedBook::new().unwrap()),
+        synced: Box::new(SyncedBook::new(rules).unwrap()),
         incoming: Box::default(),
         books,
         state: FeedState::Connecting,

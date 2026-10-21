@@ -44,8 +44,8 @@ pub fn diff(now: Instant) -> DepthDiff {
         time: time(now),
     }
 }
-pub fn book(now: Instant, mid: i64, quantity: i64, capacity: usize) -> OrderBook {
-    let mut book = OrderBook::new(capacity).unwrap();
+pub fn book(now: Instant, mid: i64, quantity: i64) -> OrderBook {
+    let mut book = OrderBook::new(price(1)).unwrap();
     book.load_snapshot(&snapshot(mid, quantity, 6)).unwrap();
     book.apply_diff(&diff(now)).unwrap();
     book

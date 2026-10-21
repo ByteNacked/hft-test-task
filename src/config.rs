@@ -6,7 +6,7 @@ use thiserror::Error;
 pub const SYMBOL: &str = "ETHUSDT";
 pub const STREAM: &str = "ethusdt@depth@100ms";
 pub const SNAPSHOT_LEVELS: usize = 1000;
-pub const BOOK_LEVELS: usize = 8192;
+pub const BOOK_PRICE_SLOTS: usize = 1 << 20;
 pub const PUBLISHED_LEVELS: usize = 20;
 pub const DIFF_LEVELS: usize = 4096;
 pub const MESSAGE_BYTES: usize = 1024 * 1024;

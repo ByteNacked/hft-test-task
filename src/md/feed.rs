@@ -1,5 +1,5 @@
 use crate::{
-    book::{BookPublisher, BookStatus},
+    book::{BookError, BookPublisher, BookStatus},
     config,
     md::{
         AdapterError, Backoff, DepthDiff, MDAdapter, ProtocolError, ReceiveTime, Snapshot,
@@ -106,7 +106,7 @@ pub(crate) async fn run<P: MDAdapter>(
         settings,
         client,
         rules,
-        synced: Box::new(SyncedBook::new()?),
+        synced: Box::new(SyncedBook::new(rules)?),
         incoming: Box::default(),
         books,
         state: FeedState::Connecting,
@@ -192,7 +192,7 @@ impl<P: MDAdapter> Runner<P> {
                 }
                 Err(error) => error,
             };
-            tracing::warn!(venue=P::NAME, %error, "market-data recovery");
+            Self::log_recovery(&error);
             if error.fatal() {
                 return Err(error);
             }
@@ -206,6 +206,13 @@ impl<P: MDAdapter> Runner<P> {
                 _ = shutdown_requested(shutdown) => return Ok(()),
                 _ = sleep_until(deadline) => {}
             }
+        }
+    }
+    fn log_recovery(error: &AdapterError) {
+        if matches!(error, AdapterError::Book(BookError::PriceRange { .. })) {
+            tracing::error!(venue=P::NAME, %error, "book price range exceeded; increase BOOK_PRICE_SLOTS and restart");
+        } else {
+            tracing::warn!(venue=P::NAME, %error, "market-data recovery");
         }
     }
     fn log_state(&mut self) {
@@ -257,7 +264,7 @@ impl<P: MDAdapter> Runner<P> {
     }
     fn recover(&mut self, error: AdapterError) -> Result<(), AdapterError> {
         self.offline()?;
-        tracing::warn!(venue=P::NAME, %error, "market-data recovery");
+        Self::log_recovery(&error);
         if error.fatal() {
             return Err(error);
         }

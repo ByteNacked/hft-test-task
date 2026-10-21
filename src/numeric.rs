@@ -126,6 +126,9 @@ impl InstrumentRules {
             lot_size,
         })
     }
+    pub fn tick_size(self) -> Price {
+        self.tick_size
+    }
     pub fn validate(self, price: Price, qty: Qty) -> Result<(), NumericError> {
         price.check_step(self.tick_size)?;
         qty.check_step(self.lot_size)

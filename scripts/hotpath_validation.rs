@@ -65,12 +65,16 @@ impl<P: MDAdapter> MDAdapter for BenchAdapter<P> {
         books: BookPublisher,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<(), AdapterError> {
+        let rules = InstrumentRules::new(price(10_000_000), qty(1_000_000)).unwrap();
         let mut runner = Runner::<P> {
             protocol: PhantomData,
             settings: Settings::for_adapter::<P>(),
             client: reqwest::Client::new(),
-            rules: InstrumentRules::new(price(10_000_000), qty(1_000_000)).unwrap(),
+            rules,
+            #[cfg(not(feature = "bench-price-slots"))]
             synced: Box::new(SyncedBook::new()?),
+            #[cfg(feature = "bench-price-slots")]
+            synced: Box::new(SyncedBook::new(rules)?),
             #[cfg(not(feature = "bench-old-api"))]
             incoming: Box::default(),
             books,

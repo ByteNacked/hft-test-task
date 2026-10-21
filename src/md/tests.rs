@@ -50,7 +50,7 @@ fn fixtures_flow_through_book_and_robot() {
     for protocol in protocols() {
         let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
         let snapshot = (protocol.snapshot)(protocol.snapshot_fixture, rules).unwrap();
-        let mut book = OrderBook::new(config::BOOK_LEVELS).unwrap();
+        let mut book = OrderBook::new(rules.tick_size()).unwrap();
         book.load_snapshot(&snapshot).unwrap();
         assert_eq!(book.event_time(), None);
         let mut diff = Box::<DepthDiff>::default();
@@ -196,7 +196,7 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
     for protocol in protocols() {
         let now = Instant::now();
         let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
-        let mut synced = SyncedBook::new().unwrap();
+        let mut synced = SyncedBook::new(rules).unwrap();
         synced
             .load(&(protocol.snapshot)(protocol.snapshot_fixture, rules).unwrap())
             .unwrap();
@@ -244,8 +244,8 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
             next = update;
         }
         // The empty side of each update must not replay levels from a reused buffer.
-        assert_eq!(synced.book.bids()[0].qty.raw(), 900_000_000);
-        assert_eq!(synced.book.asks()[0].qty.raw(), 600_000_000);
+        assert_eq!(synced.book.bids().next().unwrap().qty.raw(), 900_000_000);
+        assert_eq!(synced.book.asks().next().unwrap().qty.raw(), 600_000_000);
     }
 }
 

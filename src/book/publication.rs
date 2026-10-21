@@ -1,7 +1,7 @@
 //! Latest book view plus an independent, persistent generation of feed gaps.
 use crate::{
     book::{BookError, Level, OrderBook},
-    config::{BOOK_LEVELS, ROBOT_LEVELS},
+    config::{PUBLISHED_LEVELS, ROBOT_LEVELS},
 };
 use std::{
     sync::atomic::{AtomicU64, Ordering},
@@ -66,7 +66,7 @@ pub fn channel(
     capacity: usize,
     offline_epoch: &'static AtomicU64,
 ) -> Result<(BookPublisher, BookReader), BookError> {
-    if !(ROBOT_LEVELS..=BOOK_LEVELS).contains(&capacity) {
+    if !(ROBOT_LEVELS..=PUBLISHED_LEVELS).contains(&capacity) {
         return Err(BookError::Capacity);
     }
     // Preserve the generation across sequential service runs; never reset a
@@ -101,20 +101,14 @@ impl BookPublisher {
             self.offline_epoch.store(epoch, Ordering::Release);
             return Ok(());
         }
-        if book.event_time().is_none()
-            || !book
-                .coverage()
-                .is_some_and(|c| c.is_sufficient(book.bids(), book.asks()))
-        {
+        if book.event_time().is_none() {
             return Err(BookError::NotReady);
         }
         let slot = self.input.input_buffer_mut();
         slot.bids.clear();
         slot.asks.clear();
-        slot.bids
-            .extend_from_slice(&book.bids()[..book.bids().len().min(self.capacity)]);
-        slot.asks
-            .extend_from_slice(&book.asks()[..book.asks().len().min(self.capacity)]);
+        slot.bids.extend(book.bids().take(self.capacity));
+        slot.asks.extend(book.asks().take(self.capacity));
         slot.status = status;
         // Only this producer increments the epoch; book data travels through the triple buffer.
         slot.epoch = Some(self.offline_epoch.load(Ordering::Relaxed));

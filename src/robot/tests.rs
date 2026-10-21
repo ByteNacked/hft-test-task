@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 #[test]
 fn directions_threshold_equality_and_exact_explanation() {
     let now = Instant::now();
-    let b = view(&book(now, 20_000, 200_000_000, 16));
+    let b = view(&book(now, 20_000, 200_000_000));
     for (mid, bias) in [
         (19_995, Bias::LongBiasAster),
         (19_996, Bias::Hold),
@@ -18,7 +18,7 @@ fn directions_threshold_equality_and_exact_explanation() {
         (20_004, Bias::Hold),
         (20_005, Bias::ShortBiasAster),
     ] {
-        let a = view(&book(now, mid, 200_000_000, 16));
+        let a = view(&book(now, mid, 200_000_000));
         let d = evaluate(b.view(), a.view(), &Default::default(), now);
         assert_eq!(d.bias, bias);
         assert_eq!(d.binance.mid2_raw, Some(40_000));
@@ -29,8 +29,8 @@ fn directions_threshold_equality_and_exact_explanation() {
 fn freshness_skew_and_volume_boundaries() {
     let now = Instant::now();
     let config = RobotConfig::default();
-    let b = view(&book(now, 100_000, SCALE, 16));
-    let a = view(&book(now, 99_000, SCALE, 16));
+    let b = view(&book(now, 100_000, SCALE));
+    let a = view(&book(now, 99_000, SCALE));
     assert_eq!(
         evaluate(b.view(), a.view(), &config, now + config.max_age()).bias,
         Bias::LongBiasAster
@@ -49,12 +49,12 @@ fn freshness_skew_and_volume_boundaries() {
         (config.max_skew(), Bias::LongBiasAster),
         (config.max_skew() + Duration::from_nanos(1), Bias::Hold),
     ] {
-        let a = view(&book(now + skew, 99_000, SCALE, 16));
+        let a = view(&book(now + skew, 99_000, SCALE));
         assert_eq!(evaluate(b.view(), a.view(), &config, now + skew).bias, bias);
     }
-    let a = view(&book(now, 99_000, 199_999_999, 16));
+    let a = view(&book(now, 99_000, 199_999_999));
     assert_eq!(evaluate(b.view(), a.view(), &config, now).bias, Bias::Hold);
-    let a = view(&book(now, 99_000, i64::MAX, 16));
+    let a = view(&book(now, 99_000, i64::MAX));
     assert_eq!(
         evaluate(b.view(), a.view(), &config, now).aster.bid_qty_raw,
         Some(5 * i128::from(i64::MAX))
@@ -63,7 +63,7 @@ fn freshness_skew_and_volume_boundaries() {
 #[test]
 fn either_offline_book_blocks_bias() {
     let now = Instant::now();
-    let book = book(now, 100, SCALE, 16);
+    let book = book(now, 100, SCALE);
     let b = view(&book);
     let (mut writer, mut reader) = {
         static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -86,8 +86,8 @@ fn either_offline_book_blocks_bias() {
 fn latest_recovery_cannot_skip_hold_after_offline() {
     for fault_on_binance in [false, true] {
         let now = Instant::now();
-        let binance = book(now, 100_000, SCALE, 16);
-        let aster = book(now, 99_000, SCALE, 16);
+        let binance = book(now, 100_000, SCALE);
+        let aster = book(now, 99_000, SCALE);
         let (mut bw, br) = {
             static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             book::channel(16, &EPOCH)

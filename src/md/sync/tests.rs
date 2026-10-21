@@ -14,7 +14,7 @@ fn event(now: Instant, first: u64, last: u64, previous: u64, quantity: i64) -> B
 fn snapshot_bridge_is_inclusive_and_futures_ids_need_not_be_adjacent() {
     let now = Instant::now();
     for (first, last) in [(99, 100), (100, 100), (100, 102), (99, 102)] {
-        let mut synced = SyncedBook::new().unwrap();
+        let mut synced = SyncedBook::new(rules()).unwrap();
         synced.load(&snapshot(100, SCALE, 6)).unwrap();
         assert_eq!(
             synced
@@ -35,13 +35,13 @@ fn snapshot_bridge_is_inclusive_and_futures_ids_need_not_be_adjacent() {
                 .unwrap(),
             Applied::Update
         );
-        assert_eq!(synced.book.bids()[0].qty.raw(), 3 * SCALE);
+        assert_eq!(synced.book.bids().next().unwrap().qty.raw(), 3 * SCALE);
     }
 }
 #[test]
 fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
     let now = Instant::now();
-    let mut synced = SyncedBook::new().unwrap();
+    let mut synced = SyncedBook::new(rules()).unwrap();
     synced.load(&snapshot(100, SCALE, 6)).unwrap();
     synced
         .apply(&mut event(now, 100, 102, 99, 2 * SCALE))
@@ -68,7 +68,7 @@ fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
             synced.apply(&mut event(now, first, last, previous, qty)),
             Err(AdapterError::Sequence(_))
         ));
-        assert_eq!(synced.book.bids()[0].qty.raw(), 2 * SCALE);
+        assert_eq!(synced.book.bids().next().unwrap().qty.raw(), 2 * SCALE);
         assert_eq!(synced.book.event_time().unwrap().platform_time(), now);
     }
     let mut conflict = event(now, 100, 102, 99, 2 * SCALE);

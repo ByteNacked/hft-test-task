@@ -1,9 +1,11 @@
-//! Single-writer book. Scratch is committed only after both sides pass validation.
+//! Single-writer, price-indexed book. Failed diffs restore only touched cells.
 mod publication;
+mod side;
 pub use publication::{BookPublisher, BookReader, BookStatus, BookView, channel};
+use side::Side;
 
 use crate::{
-    config::{BOOK_LEVELS, DIFF_LEVELS, ROBOT_LEVELS, SNAPSHOT_LEVELS},
+    config::{BOOK_PRICE_SLOTS, DIFF_LEVELS, ROBOT_LEVELS, SNAPSHOT_LEVELS},
     md::{DepthDiff, EventTime, Snapshot},
     numeric::{InstrumentRules, NumericError, Price, Qty},
 };
@@ -26,21 +28,9 @@ pub type DiffSide = ArrayVec<Level, DIFF_LEVELS>;
 pub type SnapshotSide = ArrayVec<Level, SNAPSHOT_LEVELS>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Coverage {
-    pub bid_floor: Price,
-    pub ask_ceiling: Price,
-}
-impl Coverage {
-    pub fn counts(self, bids: &[Level], asks: &[Level]) -> (usize, usize) {
-        (
-            bids.partition_point(|l| l.price >= self.bid_floor),
-            asks.partition_point(|l| l.price <= self.ask_ceiling),
-        )
-    }
-    pub fn is_sufficient(self, bids: &[Level], asks: &[Level]) -> bool {
-        let (bids, asks) = self.counts(bids, asks);
-        bids >= ROBOT_LEVELS && asks >= ROBOT_LEVELS
-    }
+struct Coverage {
+    bid_floor: Price,
+    ask_ceiling: Price,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -53,6 +43,8 @@ pub enum BookError {
     DuplicatePrice,
     #[error("book capacity exceeded")]
     Capacity,
+    #[error("price {price} is outside book range (max {max_price})")]
+    PriceRange { price: Price, max_price: Price },
     #[error("empty book side")]
     EmptySide,
     #[error("snapshot contains a zero quantity")]
@@ -69,86 +61,101 @@ pub enum BookError {
 
 #[derive(Debug)]
 pub struct OrderBook {
-    bids: Vec<Level>,
-    asks: Vec<Level>,
-    scratch_bids: Vec<Level>,
-    scratch_asks: Vec<Level>,
-    capacity: usize,
+    bids: Side,
+    asks: Side,
+    tick_size: Price,
+    max_price: Price,
     coverage: Option<Coverage>,
     event_time: Option<EventTime>,
 }
 impl OrderBook {
-    pub fn new(capacity: usize) -> Result<Self, BookError> {
-        if !(ROBOT_LEVELS..=BOOK_LEVELS).contains(&capacity) {
-            return Err(BookError::Capacity);
-        }
+    pub fn new(tick_size: Price) -> Result<Self, BookError> {
+        let max_price = Price::from_raw(
+            tick_size
+                .raw()
+                .checked_mul((BOOK_PRICE_SLOTS - 1) as i64)
+                .ok_or(NumericError::Overflow)?,
+        )?;
         Ok(Self {
-            bids: Vec::with_capacity(capacity),
-            asks: Vec::with_capacity(capacity),
-            scratch_bids: Vec::with_capacity(capacity),
-            scratch_asks: Vec::with_capacity(capacity),
-            capacity,
+            bids: Side::new(),
+            asks: Side::new(),
+            tick_size,
+            max_price,
             coverage: None,
             event_time: None,
         })
     }
-    pub fn bids(&self) -> &[Level] {
-        &self.bids
+    pub fn bids(&self) -> impl Iterator<Item = Level> + '_ {
+        self.bids.levels(self.tick_size, true)
     }
-    pub fn asks(&self) -> &[Level] {
-        &self.asks
-    }
-    pub fn coverage(&self) -> Option<Coverage> {
-        self.coverage
+    pub fn asks(&self) -> impl Iterator<Item = Level> + '_ {
+        self.asks.levels(self.tick_size, false)
     }
     pub fn event_time(&self) -> Option<EventTime> {
         self.event_time
     }
-
+    fn check_prices(&self, levels: &[Level]) -> Result<(), BookError> {
+        for level in levels {
+            level.price.check_step(self.tick_size)?;
+            if level.price > self.max_price {
+                return Err(BookError::PriceRange {
+                    price: level.price,
+                    max_price: self.max_price,
+                });
+            }
+        }
+        Ok(())
+    }
     /// Snapshot levels are already sorted and validated by the decoder.
     pub(crate) fn load_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), BookError> {
-        if snapshot.bids.len() > self.capacity || snapshot.asks.len() > self.capacity {
-            return Err(BookError::Capacity);
-        }
+        self.check_prices(&snapshot.bids)?;
+        self.check_prices(&snapshot.asks)?;
         let coverage = Coverage {
             bid_floor: snapshot.bids.last().ok_or(BookError::EmptySide)?.price,
             ask_ceiling: snapshot.asks.last().ok_or(BookError::EmptySide)?.price,
         };
-        validate_book(&snapshot.bids, &snapshot.asks, coverage)?;
-        self.scratch_bids.clear();
-        self.scratch_asks.clear();
-        self.scratch_bids.extend_from_slice(&snapshot.bids);
-        self.scratch_asks.extend_from_slice(&snapshot.asks);
-        self.commit();
+        validate_snapshot(&snapshot.bids, &snapshot.asks)?;
+        self.bids.load(&snapshot.bids, self.tick_size);
+        self.asks.load(&snapshot.asks, self.tick_size);
         self.coverage = Some(coverage);
         self.event_time = None;
         Ok(())
     }
-    /// Input is normalized by the decoder; SyncedBook checks exchange continuity.
+    /// Normalized input has unique prices. No reader observes this mutable book.
     pub(crate) fn apply_diff(&mut self, diff: &DepthDiff) -> Result<(), BookError> {
         let coverage = self.coverage.ok_or(BookError::NoSnapshot)?;
-        merge(
-            &self.bids,
-            &diff.bids,
-            &mut self.scratch_bids,
-            true,
-            self.capacity,
-        )?;
-        merge(
-            &self.asks,
-            &diff.asks,
-            &mut self.scratch_asks,
-            false,
-            self.capacity,
-        )?;
-        validate_book(&self.scratch_bids, &self.scratch_asks, coverage)?;
-        self.commit();
-        self.event_time = Some(diff.time);
-        Ok(())
+        self.check_prices(&diff.bids)?;
+        self.check_prices(&diff.asks)?;
+        self.bids.apply(&diff.bids, self.tick_size);
+        self.asks.apply(&diff.asks, self.tick_size);
+        let result = self.validate(coverage);
+        if result.is_err() {
+            self.bids.rollback(&diff.bids, self.tick_size);
+            self.asks.rollback(&diff.asks, self.tick_size);
+        } else {
+            self.event_time = Some(diff.time);
+        }
+        result
     }
-    fn commit(&mut self) {
-        std::mem::swap(&mut self.bids, &mut self.scratch_bids);
-        std::mem::swap(&mut self.asks, &mut self.scratch_asks);
+    fn validate(&self, coverage: Coverage) -> Result<(), BookError> {
+        let mut bids = self.bids();
+        let mut asks = self.asks();
+        let bid = bids.next().ok_or(BookError::EmptySide)?;
+        let ask = asks.next().ok_or(BookError::EmptySide)?;
+        if bid.price >= ask.price {
+            return Err(BookError::Crossed);
+        }
+        // Only the fifth best on each side is needed to check trusted coverage.
+        if bids
+            .nth(ROBOT_LEVELS - 2)
+            .is_none_or(|l| l.price < coverage.bid_floor)
+            || asks
+                .nth(ROBOT_LEVELS - 2)
+                .is_none_or(|l| l.price > coverage.ask_ceiling)
+        {
+            return Err(BookError::CoverageLost);
+        }
+        Ok(())
     }
 }
 
@@ -172,56 +179,16 @@ pub(crate) fn prepare(
     }
     Ok(())
 }
-fn validate_book(bids: &[Level], asks: &[Level], coverage: Coverage) -> Result<(), BookError> {
+fn validate_snapshot(bids: &[Level], asks: &[Level]) -> Result<(), BookError> {
     let bid = bids.first().ok_or(BookError::EmptySide)?;
     let ask = asks.first().ok_or(BookError::EmptySide)?;
     if bid.price >= ask.price {
         return Err(BookError::Crossed);
     }
-    if !coverage.is_sufficient(bids, asks) {
+    if bids.len() < ROBOT_LEVELS || asks.len() < ROBOT_LEVELS {
         return Err(BookError::CoverageLost);
     }
     Ok(())
 }
-fn merge(
-    old: &[Level],
-    changes: &[Level],
-    out: &mut Vec<Level>,
-    bids: bool,
-    capacity: usize,
-) -> Result<(), BookError> {
-    out.clear();
-    let (mut i, mut j) = (0, 0);
-    while i < old.len() || j < changes.len() {
-        let level = match (old.get(i), changes.get(j)) {
-            (Some(a), Some(b)) if a.price == b.price => {
-                i += 1;
-                j += 1;
-                *b
-            }
-            (Some(a), Some(b)) if (bids && a.price > b.price) || (!bids && a.price < b.price) => {
-                i += 1;
-                *a
-            }
-            (_, Some(b)) => {
-                j += 1;
-                *b
-            }
-            (Some(a), None) => {
-                i += 1;
-                *a
-            }
-            (None, None) => break,
-        };
-        if level.qty != Qty::ZERO {
-            if out.len() == capacity {
-                return Err(BookError::Capacity);
-            }
-            out.push(level);
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests;
