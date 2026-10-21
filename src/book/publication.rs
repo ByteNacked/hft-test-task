@@ -1,4 +1,4 @@
-//! Latest complete book plus an independent, persistent generation of feed gaps.
+//! Latest book view plus an independent, persistent generation of feed gaps.
 use crate::{
     book::{BookError, Level, OrderBook},
     config::{BOOK_LEVELS, ROBOT_LEVELS},
@@ -60,6 +60,7 @@ pub struct BookReader {
     offline_epoch: &'static AtomicU64,
     seen_epoch: u64,
 }
+/// Capacity limits published levels per side, independently of the source book.
 /// One channel per counter; its publisher is the only writer to that counter.
 pub fn channel(
     capacity: usize,
@@ -87,7 +88,7 @@ pub fn channel(
 }
 impl BookPublisher {
     /// Offline invalidates all older views independently of book publication.
-    /// Online copies the book, preserving diff timestamps. No allocations or awaits.
+    /// Online copies the best levels, preserving diff timestamps. No allocations or awaits.
     pub fn publish(&mut self, book: &OrderBook, status: BookStatus) -> Result<(), BookError> {
         if status == BookStatus::Offline {
             // One writer. Release publishes invalidation independently of the triple buffer;
@@ -100,9 +101,6 @@ impl BookPublisher {
             self.offline_epoch.store(epoch, Ordering::Release);
             return Ok(());
         }
-        if book.bids().len() > self.capacity || book.asks().len() > self.capacity {
-            return Err(BookError::Capacity);
-        }
         if book.event_time().is_none()
             || !book
                 .coverage()
@@ -113,8 +111,10 @@ impl BookPublisher {
         let slot = self.input.input_buffer_mut();
         slot.bids.clear();
         slot.asks.clear();
-        slot.bids.extend_from_slice(book.bids());
-        slot.asks.extend_from_slice(book.asks());
+        slot.bids
+            .extend_from_slice(&book.bids()[..book.bids().len().min(self.capacity)]);
+        slot.asks
+            .extend_from_slice(&book.asks()[..book.asks().len().min(self.capacity)]);
         slot.status = status;
         // Only this producer increments the epoch; book data travels through the triple buffer.
         slot.epoch = Some(self.offline_epoch.load(Ordering::Relaxed));

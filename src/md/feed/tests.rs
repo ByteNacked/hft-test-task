@@ -12,7 +12,7 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
     .unwrap();
     let (books, mut reader) = {
         static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        book::channel(config::BOOK_LEVELS, &EPOCH)
+        book::channel(config::PUBLISHED_LEVELS, &EPOCH)
     }
     .unwrap();
     let mut runner = Runner::<crate::binance::BinanceAdapter> {

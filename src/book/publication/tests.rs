@@ -2,6 +2,7 @@ use crate::test_support::*;
 use crate::{
     book::OrderBook,
     book::{self, BookError, BookStatus},
+    config::PUBLISHED_LEVELS,
     numeric::SCALE,
 };
 use std::{
@@ -12,6 +13,51 @@ use std::{
     thread,
     time::Instant,
 };
+
+#[test]
+fn publication_limits_depth_and_promotes_retained_levels_after_deletion() {
+    let now = Instant::now();
+    let mut book = OrderBook::new(32).unwrap();
+    book.load_snapshot(&snapshot(100, SCALE, 25)).unwrap();
+    book.apply_diff(&diff(now)).unwrap();
+    static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let (mut writer, mut reader) = book::channel(PUBLISHED_LEVELS, &EPOCH).unwrap();
+    writer.publish(&book, BookStatus::Online).unwrap();
+    assert!(reader.update());
+    assert_eq!(reader.view().bids, book.bids()[..20]);
+    assert_eq!(reader.view().asks, book.asks()[..20]);
+    assert_eq!(book.bids().len(), 25);
+    assert_eq!(book.asks().len(), 25);
+
+    let later = now + std::time::Duration::from_millis(1);
+    let mut update = diff(later);
+    update.bids.push(level(99, 0));
+    update.asks.push(level(101, 0));
+    book.apply_diff(&update).unwrap();
+    writer.publish(&book, BookStatus::Online).unwrap();
+    assert!(reader.update());
+    assert_eq!(reader.view().bids, book.bids()[..20]);
+    assert_eq!(reader.view().asks, book.asks()[..20]);
+    assert_eq!(reader.view().bids[19].price, price(79));
+    assert_eq!(reader.view().asks[19].price, price(121));
+    assert_eq!(
+        reader.view().exchange_time,
+        Some(update.time.exchange_time())
+    );
+    assert_eq!(reader.view().platform_time, Some(later));
+
+    // A shallower recovery must not retain stale levels from an earlier view.
+    writer.publish(&book, BookStatus::Offline).unwrap();
+    book.load_snapshot(&snapshot(100, SCALE, 6)).unwrap();
+    book.apply_diff(&diff(later)).unwrap();
+    writer.publish(&book, BookStatus::Online).unwrap();
+    assert!(reader.update());
+    assert_eq!(reader.view().status, BookStatus::Offline);
+    assert!(reader.update());
+    assert_eq!(reader.view().status, BookStatus::Online);
+    assert_eq!(reader.view().bids, book.bids());
+    assert_eq!(reader.view().asks, book.asks());
+}
 
 #[test]
 fn offline_start_and_online_requires_applied_diff() {

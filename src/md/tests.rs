@@ -62,7 +62,7 @@ fn fixtures_flow_through_book_and_robot() {
         book.apply_diff(&diff).unwrap();
         let (mut writer, mut reader) = {
             static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            book::channel(config::BOOK_LEVELS, &EPOCH)
+            book::channel(config::PUBLISHED_LEVELS, &EPOCH)
         }
         .unwrap();
         writer.publish(&book, BookStatus::Online).unwrap();
