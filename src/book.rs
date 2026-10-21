@@ -1,4 +1,4 @@
-//! Single-writer, price-indexed book. Failed diffs restore only touched cells.
+//! Single-writer, price-indexed book. Failed updates require a new snapshot.
 mod publication;
 mod side;
 pub use publication::{BookPublisher, BookReader, BookStatus, BookView, channel};
@@ -154,19 +154,22 @@ impl OrderBook {
         Ok(())
     }
     /// Input is decoded with this book's instrument rules and has unique indices.
-    /// No reader observes this mutable book.
+    /// No reader observes this mutable book. A failed update invalidates it until reload.
     pub(crate) fn apply_diff(&mut self, diff: &DepthDiff) -> Result<(), BookError> {
         let coverage = self.coverage.ok_or(BookError::NoSnapshot)?;
         self.bids.apply(&diff.bids);
         self.asks.apply(&diff.asks);
-        let result = self.validate(coverage);
-        if result.is_err() {
-            self.bids.rollback(&diff.bids);
-            self.asks.rollback(&diff.asks);
-        } else {
-            self.event_time = Some(diff.time);
+        if let Err(error) = self.validate(coverage) {
+            // Do not undo writes: the adapter publishes Offline and reloads a snapshot.
+            // Reject further updates and Online publication of this damaged book.
+            self.coverage = None;
+            self.event_time = None;
+            return Err(error);
         }
-        result
+        self.bids.refresh_top(self.tick_size);
+        self.asks.refresh_top(self.tick_size);
+        self.event_time = Some(diff.time);
+        Ok(())
     }
     fn validate(&self, coverage: Coverage) -> Result<(), BookError> {
         let mut bids = self.bids();

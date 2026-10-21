@@ -8,6 +8,10 @@ use crate::{
 use std::{io::Write, sync::Mutex, time::Instant};
 use tracing_subscriber::{Layer, layer::Context, prelude::*};
 
+// Scoped subscribers change tracing's global callsite interest/max-level caches.
+// Keep their setup/teardown separate; producer threads inside each test still run concurrently.
+static SUBSCRIBER_TEST: Mutex<()> = Mutex::new(());
+
 type Seen = Arc<Mutex<Vec<(thread::ThreadId, Option<SystemTime>, String)>>>;
 #[derive(Clone)]
 struct Capture(Seen);
@@ -49,6 +53,7 @@ fn decision(bias: Bias) -> Decision {
 
 #[test]
 fn formatting_is_off_robot_and_drop_drains_with_original_time_and_filters() {
+    let _subscriber = SUBSCRIBER_TEST.lock().unwrap();
     for level in ["info", "debug", "warn"] {
         let seen = Seen::default();
         tracing::subscriber::with_default(subscriber(seen.clone(), level), || {
@@ -110,6 +115,7 @@ impl<S: tracing::Subscriber> Layer<S> for LossCount {
 
 #[test]
 fn full_queue_drops_without_overwrite_and_retries_bias_then_reports_loss_on_close() {
+    let _subscriber = SUBSCRIBER_TEST.lock().unwrap();
     let events = Arc::new(Events {
         robot_info: true,
         robot_debug: false,
@@ -157,6 +163,7 @@ fn full_queue_drops_without_overwrite_and_retries_bias_then_reports_loss_on_clos
 
 #[test]
 fn concurrent_feeds_keep_fields_order_colors_and_drain_after_producers_stop() {
+    let _subscriber = SUBSCRIBER_TEST.lock().unwrap();
     let seen = Seen::default();
     tracing::subscriber::with_default(subscriber(seen.clone(), "debug"), || {
         let events = Arc::new(Events::new(config::LOG_RECORDS));

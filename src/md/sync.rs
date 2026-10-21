@@ -76,7 +76,10 @@ impl SyncedBook {
                 return Err(AdapterError::Sequence("snapshot bridge missing"));
             }
         }
-        self.book.apply_diff(diff)?;
+        if let Err(error) = self.book.apply_diff(diff) {
+            self.reset();
+            return Err(error.into());
+        }
         // Swap owners, not the 128 KiB payloads. The previous diff becomes the
         // next decode workspace; errors and duplicates retain the accepted diff.
         std::mem::swap(&mut self.last, diff);

@@ -11,7 +11,7 @@ use std::{
 };
 
 #[test]
-fn transactional_updates_preserves_distant_levels_and_absolute_quantities() {
+fn updates_preserve_distant_levels_and_absolute_quantities() {
     let now = Instant::now();
     let mut book = book(now, 100, SCALE);
     let mut change = diff(now);
@@ -32,41 +32,59 @@ fn transactional_updates_preserves_distant_levels_and_absolute_quantities() {
     assert_eq!(book.bids().last().unwrap().price.raw(), 10);
 }
 #[test]
-fn errors_do_not_commit_either_side_or_timestamp() {
+fn invalid_updates_require_snapshot_and_cannot_publish_online() {
+    use crate::book::{BookStatus, channel};
     let now = Instant::now();
-    let mut book = book(now, 100, SCALE);
-    let original = (
-        book.bids().collect::<Vec<_>>(),
-        book.asks().collect::<Vec<_>>(),
-        book.coverage,
-        book.event_time(),
-    );
-    let mut change = diff(now + Duration::from_secs(1));
-    change.bids.push(indexed(99, 2 * SCALE));
-    change.asks.extend([indexed(98, SCALE), indexed(106, 0)]);
-    assert_eq!(book.apply_diff(&change), Err(BookError::Crossed));
-    assert_eq!(
-        (
-            book.bids().collect::<Vec<_>>(),
-            book.asks().collect::<Vec<_>>(),
-            book.coverage,
-            book.event_time()
-        ),
-        (
-            original.0.clone(),
-            original.1.clone(),
-            original.2,
-            original.3
-        )
-    );
-    change.asks.clear();
-    change.asks.extend([indexed(101, 0), indexed(102, 0)]);
-    assert_eq!(book.apply_diff(&change), Err(BookError::CoverageLost));
-    assert_eq!(book.asks().collect::<Vec<_>>(), original.1);
-    change.asks.clear();
-    change.asks.extend((101..=106).map(|p| indexed(p, 0)));
-    assert_eq!(book.apply_diff(&change), Err(BookError::EmptySide));
-    assert_eq!(book.asks().collect::<Vec<_>>(), original.1);
+    for error in [
+        BookError::Crossed,
+        BookError::CoverageLost,
+        BookError::EmptySide,
+    ] {
+        let mut book = book(now, 100, SCALE);
+        static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let (mut writer, mut reader) = channel(20, &EPOCH).unwrap();
+        writer.publish(&book, BookStatus::Online).unwrap();
+        reader.update();
+        let held_bids = reader.view().bids.clone();
+        let held_asks = reader.view().asks.clone();
+        let mut change = diff(now + Duration::from_secs(1));
+        change.bids.push(indexed(99, 2 * SCALE));
+        match error {
+            BookError::Crossed => change.asks.push(indexed(99, SCALE)),
+            BookError::CoverageLost => change.asks.extend([indexed(101, 0), indexed(102, 0)]),
+            BookError::EmptySide => change.asks.extend((101..=106).map(|p| indexed(p, 0))),
+            _ => unreachable!(),
+        }
+        assert_eq!(book.apply_diff(&change), Err(error));
+        assert_eq!(book.event_time(), None);
+        assert_eq!(book.apply_diff(&diff(now)), Err(BookError::NoSnapshot));
+        assert_eq!(
+            writer.publish(&book, BookStatus::Online),
+            Err(BookError::NotReady)
+        );
+        assert!(!reader.update());
+        assert_eq!(reader.view().bids, held_bids);
+        assert_eq!(reader.view().asks, held_asks);
+        writer.publish(&book, BookStatus::Offline).unwrap();
+        reader.update();
+        assert_eq!(reader.view().status, BookStatus::Offline);
+        assert_eq!(
+            book.load_snapshot(&snapshot(200, SCALE, 4)),
+            Err(BookError::CoverageLost)
+        );
+        assert_eq!(book.apply_diff(&diff(now)), Err(BookError::NoSnapshot));
+        book.load_snapshot(&snapshot(200, SCALE, 6)).unwrap();
+        assert_eq!(
+            writer.publish(&book, BookStatus::Online),
+            Err(BookError::NotReady)
+        );
+        book.apply_diff(&diff(now)).unwrap();
+        writer.publish(&book, BookStatus::Online).unwrap();
+        reader.update();
+        assert_eq!(reader.view().status, BookStatus::Online);
+        assert_eq!(reader.view().bids, book.bids().collect::<Vec<_>>());
+        assert_eq!(reader.view().asks, book.asks().collect::<Vec<_>>());
+    }
 }
 #[test]
 fn snapshot_validation_and_new_epoch_clears_timestamps() {
@@ -90,6 +108,8 @@ proptest! {
     #[test]
     fn updates_match_btree(operations in prop::collection::vec((any::<bool>(), 0_i64..50, 0_i64..5), 1..250)) {
         let now = Instant::now(); let mut book = book(now,100,SCALE);
+        static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let (mut writer, mut reader) = crate::book::channel(crate::config::PUBLISHED_LEVELS, &EPOCH).unwrap();
         let to_map = |levels: Vec<crate::book::Level>| levels.iter().map(|l| (l.price.raw(), l.qty.raw())).collect::<BTreeMap<_,_>>();
         let (mut bids,mut asks) = (to_map(book.bids().collect()), to_map(book.asks().collect()));
         for (is_bid, offset, units) in operations {
@@ -101,15 +121,26 @@ proptest! {
             let mut change=diff(now); if is_bid { change.bids.push(indexed(price,units*SCALE)); } else { change.asks.push(indexed(price,units*SCALE)); }
             prop_assert_eq!(book.apply_diff(&change).is_ok(), valid);
             if valid { bids=new_bids; asks=new_asks; }
+            else {
+                prop_assert_eq!(book.apply_diff(&diff(now)), Err(BookError::NoSnapshot));
+                prop_assert_eq!(writer.publish(&book, crate::book::BookStatus::Online), Err(BookError::NotReady));
+                book.load_snapshot(&snapshot(100,SCALE,6)).unwrap();
+                book.apply_diff(&diff(now)).unwrap();
+                bids=to_map(book.bids().collect()); asks=to_map(book.asks().collect());
+            }
             prop_assert_eq!(to_map(book.bids().collect()), bids.clone()); prop_assert_eq!(to_map(book.asks().collect()), asks.clone());
             prop_assert!(book.bids().collect::<Vec<_>>().windows(2).all(|p| p[0].price>p[1].price));
             prop_assert!(book.asks().collect::<Vec<_>>().windows(2).all(|p| p[0].price<p[1].price));
+            writer.publish(&book, crate::book::BookStatus::Online).unwrap();
+            reader.update();
+            prop_assert_eq!(&reader.view().bids, &bids.iter().rev().take(20).map(|(&p,&q)|level(p,q)).collect::<Vec<_>>());
+            prop_assert_eq!(&reader.view().asks, &asks.iter().take(20).map(|(&p,&q)|level(p,q)).collect::<Vec<_>>());
         }
     }
 }
 
 #[test]
-fn sparse_bitmap_boundaries_rollback_and_snapshot_replacement() {
+fn sparse_bitmap_boundaries_and_snapshot_replacement() {
     let now = Instant::now();
     let tick = price(10);
     let instrument = InstrumentRules::new(tick, qty(1)).unwrap();
@@ -140,18 +171,10 @@ fn sparse_bitmap_boundaries_rollback_and_snapshot_replacement() {
     );
     assert_eq!(original_asks.last().unwrap().price, price(max));
 
-    // Empty complete bitmap words/groups, then fail coverage on the other side.
+    // Delete levels across bitmap word/group boundaries.
     for l in &mut change.bids {
         l.qty = qty(0);
     }
-    change.asks.clear();
-    change
-        .asks
-        .extend(initial.asks[..2].iter().map(|l| indexed(l.price.raw(), 0)));
-    assert_eq!(book.apply_diff(&change), Err(BookError::CoverageLost));
-    assert_eq!(book.bids().collect::<Vec<_>>(), original_bids);
-    assert_eq!(book.asks().collect::<Vec<_>>(), original_asks);
-
     // Out-of-range deletions and non-tick prices must also be rejected.
     for (raw, error) in [
         (
@@ -208,7 +231,7 @@ fn sparse_bitmap_boundaries_rollback_and_snapshot_replacement() {
 }
 
 #[test]
-fn best_groups_follow_insert_delete_rollback_and_snapshot() {
+fn best_groups_follow_insert_delete_and_snapshot() {
     let now = Instant::now();
     let mut book = OrderBook::new(price(1)).unwrap();
     let initial = crate::md::Snapshot {
@@ -263,17 +286,6 @@ fn best_groups_follow_insert_delete_rollback_and_snapshot() {
     change.bids.extend([indexed(12288, 0), indexed(8192, 0)]);
     change.asks.extend([indexed(12289, 0), indexed(16383, 0)]);
     book.apply_diff(&change).unwrap();
-    assert_eq!(book.bids().collect::<Vec<_>>(), initial.bids[1..]);
-    assert_eq!(book.asks().collect::<Vec<_>>(), initial.asks[1..]);
-
-    // Rollback must restore an emptied side and remove the other side's new best.
-    change.bids.clear();
-    change.asks.clear();
-    change
-        .bids
-        .extend(book.bids().map(|l| indexed(l.price.raw(), 0)));
-    change.asks.push(indexed(10000, SCALE));
-    assert_eq!(book.apply_diff(&change), Err(BookError::EmptySide));
     assert_eq!(book.bids().collect::<Vec<_>>(), initial.bids[1..]);
     assert_eq!(book.asks().collect::<Vec<_>>(), initial.asks[1..]);
 

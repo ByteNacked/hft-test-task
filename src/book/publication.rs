@@ -107,8 +107,12 @@ impl BookPublisher {
         let slot = self.input.input_buffer_mut();
         slot.bids.clear();
         slot.asks.clear();
-        slot.bids.extend(book.bids().take(self.capacity));
-        slot.asks.extend(book.asks().take(self.capacity));
+        let bids = &book.bids.top;
+        let asks = &book.asks.top;
+        slot.bids
+            .extend_from_slice(&bids[..bids.len().min(self.capacity)]);
+        slot.asks
+            .extend_from_slice(&asks[..asks.len().min(self.capacity)]);
         slot.status = status;
         // Only this producer increments the epoch; book data travels through the triple buffer.
         slot.epoch = Some(self.offline_epoch.load(Ordering::Relaxed));

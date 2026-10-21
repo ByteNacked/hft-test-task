@@ -85,3 +85,29 @@ fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
     ));
     assert!(!synced.ready());
 }
+
+#[test]
+fn damaged_book_rejects_even_previous_duplicate_until_snapshot_reload() {
+    let now = Instant::now();
+    let mut synced = SyncedBook::new(rules()).unwrap();
+    synced.load(&snapshot(100, SCALE, 6)).unwrap();
+    synced.apply(&mut event(now, 100, 102, 99, SCALE)).unwrap();
+    let mut invalid = event(now, 103, 104, 102, SCALE);
+    invalid.asks.push(indexed(99, SCALE));
+    assert!(matches!(
+        synced.apply(&mut invalid),
+        Err(AdapterError::Book(crate::book::BookError::Crossed))
+    ));
+    assert!(!synced.ready());
+    assert!(!synced.has_snapshot());
+    assert!(matches!(
+        synced.apply(&mut event(now, 100, 102, 99, SCALE)),
+        Err(AdapterError::Sequence(_))
+    ));
+    synced.load(&snapshot(100, SCALE, 6)).unwrap();
+    assert_eq!(
+        synced.apply(&mut event(now, 100, 105, 99, SCALE)).unwrap(),
+        Applied::Update
+    );
+    assert!(synced.ready());
+}

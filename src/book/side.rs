@@ -1,19 +1,22 @@
 //! Fixed price slots and two bitmap levels; all storage is allocated at startup.
 use super::{IndexedLevel, Level};
 use crate::{
-    config::{BOOK_PRICE_SLOTS, DIFF_LEVELS},
+    config::{BOOK_PRICE_SLOTS, PUBLISHED_LEVELS},
     numeric::{Price, Qty},
 };
+use arrayvec::ArrayVec;
 
 #[derive(Debug)]
 pub(super) struct Side {
     quantities: Box<[Qty]>,
     occupied: Box<[u64]>,
     nonempty_words: Box<[u64]>,
-    undo: Box<[Qty]>,
     descending: bool,
     // First nonempty summary word in this side's price order; None iff empty.
     best_group: Option<usize>,
+    pub(super) top: ArrayVec<Level, PUBLISHED_LEVELS>,
+    worst_top_index: usize,
+    top_dirty: bool,
 }
 impl Side {
     pub(super) fn new(descending: bool) -> Self {
@@ -22,9 +25,11 @@ impl Side {
             quantities: vec![Qty::ZERO; BOOK_PRICE_SLOTS].into_boxed_slice(),
             occupied: vec![0; words].into_boxed_slice(),
             nonempty_words: vec![0; words.div_ceil(64)].into_boxed_slice(),
-            undo: vec![Qty::ZERO; DIFF_LEVELS].into_boxed_slice(),
             descending,
             best_group: None,
+            top: ArrayVec::new(),
+            worst_top_index: 0,
+            top_dirty: false,
         }
     }
     pub(super) fn levels(&self, tick: Price) -> impl Iterator<Item = Level> + '_ {
@@ -97,16 +102,33 @@ impl Side {
         for level in levels {
             self.set((level.price.raw() / tick.raw()) as usize, level.qty);
         }
+        self.top_dirty = true;
+        self.refresh_top(tick);
     }
     pub(super) fn apply(&mut self, levels: &[IndexedLevel]) {
-        for (i, level) in levels.iter().enumerate() {
-            self.undo[i] = self.set(level.index, level.qty);
+        for level in levels {
+            let old = self.set(level.index, level.qty);
+            // Compare against the committed boundary for the entire diff. Deletions
+            // inside it trigger a rebuild that also picks up changes deeper in the book.
+            self.top_dirty |= old != level.qty
+                && (self.top.len() < PUBLISHED_LEVELS
+                    || if self.descending {
+                        level.index >= self.worst_top_index
+                    } else {
+                        level.index <= self.worst_top_index
+                    });
         }
     }
-    pub(super) fn rollback(&mut self, levels: &[IndexedLevel]) {
-        for (i, level) in levels.iter().enumerate() {
-            self.set(level.index, self.undo[i]);
+    pub(super) fn refresh_top(&mut self, tick: Price) {
+        if !self.top_dirty {
+            return;
         }
+        self.top = self.levels(tick).take(PUBLISHED_LEVELS).collect();
+        self.worst_top_index = self
+            .top
+            .last()
+            .map_or(0, |level| (level.price.raw() / tick.raw()) as usize);
+        self.top_dirty = false;
     }
 }
 fn bits(mut word: u64, descending: bool) -> impl Iterator<Item = usize> {
