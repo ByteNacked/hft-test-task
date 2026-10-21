@@ -1,5 +1,6 @@
 //! Market-data adapter contract and transport-independent normalized data.
 mod adapter;
+pub(crate) mod feed;
 pub(crate) mod sync;
 use crate::{
     book::{BookError, DiffSide, SnapshotSide, prepare},

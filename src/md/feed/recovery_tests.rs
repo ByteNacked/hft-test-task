@@ -1,4 +1,3 @@
-use super::*;
 use crate::{book, md::spawn_adapter, metrics};
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
@@ -7,21 +6,18 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
-const METADATA: &[u8] = include_bytes!("../../../tests/fixtures/binance/metadata.json");
-const SNAPSHOT: &[u8] = include_bytes!("../../../tests/fixtures/binance/snapshot.json");
-
 struct Request {
     path: String,
     reply: oneshot::Sender<Response>,
 }
 #[derive(Debug)]
-struct Response {
-    status: u16,
-    headers: &'static str,
-    body: Vec<u8>,
+pub(super) struct Response {
+    pub(super) status: u16,
+    pub(super) headers: &'static str,
+    pub(super) body: Vec<u8>,
 }
 impl Response {
-    fn ok(body: &[u8]) -> Self {
+    pub(super) fn ok(body: &[u8]) -> Self {
         Self {
             status: 200,
             headers: "",
@@ -29,15 +25,15 @@ impl Response {
         }
     }
 }
-struct Mock {
-    settings: Settings,
+pub(super) struct Mock {
+    pub(super) settings: Settings,
     requests: mpsc::UnboundedReceiver<Request>,
     sockets: mpsc::UnboundedReceiver<WebSocketStream<TcpStream>>,
     http: JoinHandle<()>,
     ws: JoinHandle<()>,
 }
 impl Mock {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let http_addr = http.local_addr().unwrap();
         let ws = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -96,7 +92,7 @@ impl Mock {
                 ws: format!("ws://{ws_addr}/stream"),
                 metadata: format!("http://{http_addr}/metadata"),
                 snapshot: format!("http://{http_addr}/snapshot"),
-                ..Settings::default()
+                ..Settings::for_protocol::<TestAdapter>()
             },
             requests,
             sockets,
@@ -104,7 +100,7 @@ impl Mock {
             ws,
         }
     }
-    async fn request(&mut self, path: &str) -> oneshot::Sender<Response> {
+    pub(super) async fn request(&mut self, path: &str) -> oneshot::Sender<Response> {
         let request = timeout(Duration::from_secs(3), self.requests.recv())
             .await
             .unwrap()
@@ -112,7 +108,7 @@ impl Mock {
         assert_eq!(request.path, path);
         request.reply
     }
-    async fn socket(&mut self) -> WebSocketStream<TcpStream> {
+    pub(super) async fn socket(&mut self) -> WebSocketStream<TcpStream> {
         timeout(Duration::from_secs(3), self.sockets.recv())
             .await
             .unwrap()
@@ -126,10 +122,10 @@ impl Drop for Mock {
     }
 }
 
-fn event(first: u64, last: u64, previous: u64, quantity: &str) -> Message {
-    Message::Text(format!(r#"{{"stream":"ethusdt@depth@100ms","data":{{"e":"depthUpdate","E":1700000000002,"T":1700000000001,"s":"ETHUSDT","U":{first},"u":{last},"pu":{previous},"b":[["3499","{quantity}"]],"a":[["3501","{quantity}"]]}}}}"#).into())
+pub(super) fn event(first: u64, last: u64, previous: u64, quantity: &str) -> Message {
+    Message::Text(format!(r#"{{"stream":"ethusdt@depth@100ms","data":{{"e":"depthUpdate","E":1700000000002,"T":1700000000001,"s":"ETHUSDT","U":{first},"u":{last},"pu":{previous},"b":[["{BID}","{quantity}"]],"a":[["{ASK}","{quantity}"]]}}}}"#).into())
 }
-async fn wait_book(reader: &mut book::BookReader, status: BookStatus, after: u64) {
+pub(super) async fn wait_book(reader: &mut book::BookReader, status: BookStatus, after: u64) {
     timeout(Duration::from_secs(3), async {
         loop {
             reader.update();
@@ -142,7 +138,7 @@ async fn wait_book(reader: &mut book::BookReader, status: BookStatus, after: u64
     .await
     .unwrap();
 }
-async fn wait_metrics(
+pub(super) async fn wait_metrics(
     reader: &mut triple_buffer::Output<FeedMetrics>,
     predicate: impl Fn(&FeedMetrics) -> bool,
 ) {
@@ -162,14 +158,14 @@ async fn wait_metrics(
 #[tokio::test]
 async fn slow_snapshot_keeps_websocket_alive_then_gap_recovers_without_refreshing_duplicates() {
     let mut mock = Mock::new().await;
-    let settings = std::mem::take(&mut mock.settings);
+    let settings = std::mem::replace(&mut mock.settings, Settings::for_protocol::<TestAdapter>());
     let (books, mut reader) = book::channel(config::BOOK_LEVELS).unwrap();
     let (metrics, mut stats) = metrics::channel();
     let (stop, shutdown) = watch::channel(false);
     // Exercise the real dedicated OS thread + current-thread runtime contract.
     let worker = spawn_adapter(
-        "binance-test",
-        BinanceAdapter { settings },
+        TestAdapter::NAME,
+        TestAdapter { settings },
         books,
         metrics,
         shutdown,
@@ -229,20 +225,20 @@ async fn slow_snapshot_keeps_websocket_alive_then_gap_recovers_without_refreshin
     assert_eq!(stats.output_buffer().connection_epoch, 1);
 }
 
-struct Harness {
-    reader: book::BookReader,
-    stats: triple_buffer::Output<FeedMetrics>,
+pub(super) struct Harness {
+    pub(super) reader: book::BookReader,
+    pub(super) stats: triple_buffer::Output<FeedMetrics>,
     stop: watch::Sender<bool>,
     worker: std::thread::JoinHandle<Result<(), AdapterError>>,
 }
 impl Harness {
-    fn start(settings: Settings) -> Self {
+    pub(super) fn start(settings: Settings) -> Self {
         let (books, reader) = book::channel(config::BOOK_LEVELS).unwrap();
         let (metrics, stats) = metrics::channel();
         let (stop, shutdown) = watch::channel(false);
         let worker = spawn_adapter(
-            "binance-test",
-            BinanceAdapter { settings },
+            TestAdapter::NAME,
+            TestAdapter { settings },
             books,
             metrics,
             shutdown,
@@ -255,14 +251,14 @@ impl Harness {
             worker,
         }
     }
-    async fn live(&mut self, mock: &mut Mock, ws: &mut WebSocketStream<TcpStream>) {
+    pub(super) async fn live(&mut self, mock: &mut Mock, ws: &mut WebSocketStream<TcpStream>) {
         let snapshot = mock.request("/snapshot").await;
         ws.send(event(100, 102, 99, "0.3")).await.unwrap();
         snapshot.send(Response::ok(SNAPSHOT)).unwrap();
         let after = self.reader.view().sequence();
         wait_book(&mut self.reader, BookStatus::Online, after).await;
     }
-    async fn finish(mut self) {
+    pub(super) async fn finish(mut self) {
         self.stop.send(true).unwrap();
         timeout(Duration::from_secs(2), async {
             while !self.worker.is_finished() {
@@ -282,7 +278,10 @@ impl Harness {
 #[tokio::test]
 async fn malformed_frame_and_both_close_and_eof_recover() {
     let mut mock = Mock::new().await;
-    let mut h = Harness::start(std::mem::take(&mut mock.settings));
+    let mut h = Harness::start(std::mem::replace(
+        &mut mock.settings,
+        Settings::for_protocol::<TestAdapter>(),
+    ));
     mock.request("/metadata")
         .await
         .send(Response::ok(METADATA))
@@ -317,7 +316,10 @@ async fn queue_count_and_byte_limits_cancel_old_http_and_recover() {
         } else {
             mock.settings.queue_messages = 1;
         }
-        let mut h = Harness::start(std::mem::take(&mut mock.settings));
+        let mut h = Harness::start(std::mem::replace(
+            &mut mock.settings,
+            Settings::for_protocol::<TestAdapter>(),
+        ));
         mock.request("/metadata")
             .await
             .send(Response::ok(METADATA))
@@ -348,7 +350,10 @@ async fn queue_count_and_byte_limits_cancel_old_http_and_recover() {
 async fn watchdog_does_not_accept_ping_or_duplicate_as_fresh_data() {
     let mut mock = Mock::new().await;
     mock.settings.watchdog = Duration::from_secs(1);
-    let mut h = Harness::start(std::mem::take(&mut mock.settings));
+    let mut h = Harness::start(std::mem::replace(
+        &mut mock.settings,
+        Settings::for_protocol::<TestAdapter>(),
+    ));
     mock.request("/metadata")
         .await
         .send(Response::ok(METADATA))
@@ -384,7 +389,10 @@ async fn http_and_sync_deadlines_recover_and_shutdown_cancels_pending_http() {
         } else {
             mock.settings.sync_timeout = Duration::from_millis(150);
         }
-        let mut h = Harness::start(std::mem::take(&mut mock.settings));
+        let mut h = Harness::start(std::mem::replace(
+            &mut mock.settings,
+            Settings::for_protocol::<TestAdapter>(),
+        ));
         mock.request("/metadata")
             .await
             .send(Response::ok(METADATA))
@@ -400,7 +408,10 @@ async fn http_and_sync_deadlines_recover_and_shutdown_cancels_pending_http() {
         h.finish().await;
     }
     let mut mock = Mock::new().await;
-    let h = Harness::start(std::mem::take(&mut mock.settings));
+    let h = Harness::start(std::mem::replace(
+        &mut mock.settings,
+        Settings::for_protocol::<TestAdapter>(),
+    ));
     mock.request("/metadata")
         .await
         .send(Response::ok(METADATA))
@@ -413,7 +424,10 @@ async fn http_and_sync_deadlines_recover_and_shutdown_cancels_pending_http() {
 #[tokio::test]
 async fn retry_after_prevents_early_retry_and_shutdown_interrupts_backoff() {
     let mut mock = Mock::new().await;
-    let mut h = Harness::start(std::mem::take(&mut mock.settings));
+    let mut h = Harness::start(std::mem::replace(
+        &mut mock.settings,
+        Settings::for_protocol::<TestAdapter>(),
+    ));
     mock.request("/metadata")
         .await
         .send(Response::ok(METADATA))
@@ -448,7 +462,10 @@ async fn websocket_handshake_timeout_is_retriable() {
     let mut mock = Mock::new().await;
     mock.settings.ws = format!("ws://{}", listener.local_addr().unwrap());
     mock.settings.connect_timeout = Duration::from_millis(100);
-    let mut h = Harness::start(std::mem::take(&mut mock.settings));
+    let mut h = Harness::start(std::mem::replace(
+        &mut mock.settings,
+        Settings::for_protocol::<TestAdapter>(),
+    ));
     mock.request("/metadata")
         .await
         .send(Response::ok(METADATA))
@@ -465,37 +482,13 @@ async fn websocket_handshake_timeout_is_retriable() {
 }
 
 #[tokio::test]
-async fn http_body_is_bounded_with_and_without_content_length() {
-    for chunked in [false, true] {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0; 1024];
-            assert!(socket.read(&mut request).await.unwrap() > 0);
-            let response = if chunked {
-                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n1234\r\n4\r\n5678\r\n0\r\n\r\n"
-            } else {
-                "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n12345678"
-            };
-            socket.write_all(response.as_bytes()).await.unwrap();
-        });
-        let result = get_body(reqwest::Client::new(), format!("http://{addr}"), 7).await;
-        assert!(matches!(
-            result,
-            Err(AdapterError::Protocol(ProtocolError::BodyTooLarge))
-        ));
-        server.await.unwrap();
-    }
-}
-
-#[tokio::test]
 async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
-    let rules = super::super::decode_metadata(METADATA).unwrap();
+    let rules = TestAdapter::decode_metadata(METADATA).unwrap();
     let (books, mut reader) = book::channel(config::BOOK_LEVELS).unwrap();
     let (metrics, _) = metrics::channel();
-    let mut runner = Runner {
-        settings: Settings::default(),
+    let mut runner = Runner::<TestAdapter> {
+        protocol: PhantomData,
+        settings: Settings::for_protocol::<TestAdapter>(),
         client: reqwest::Client::new(),
         rules,
         synced: Box::new(SyncedBook::new(rules).unwrap()),
@@ -518,7 +511,7 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
         worker: tokio::task::spawn_blocking(move || {
             started.send(()).unwrap();
             wait.recv().unwrap();
-            super::super::decode_snapshot(SNAPSHOT, rules)
+            TestAdapter::decode_snapshot(SNAPSHOT, rules)
                 .map(Box::new)
                 .map_err(Into::into)
         }),
@@ -540,7 +533,7 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
     assert_eq!(reader.view().status(), BookStatus::Offline);
     runner
         .job
-        .parse(runner.stats.sync_epoch, SNAPSHOT.to_vec(), rules);
+        .parse::<TestAdapter>(runner.stats.sync_epoch, SNAPSHOT.to_vec(), rules);
     let completion = runner.job.next().await;
     runner.complete(completion).unwrap();
     assert_eq!(runner.stats.snapshots, 1);
@@ -552,7 +545,7 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
         worker: tokio::task::spawn_blocking(move || {
             wait.recv().unwrap();
             Ok(Box::new(
-                super::super::decode_snapshot(SNAPSHOT, rules).unwrap(),
+                TestAdapter::decode_snapshot(SNAPSHOT, rules).unwrap(),
             ))
         }),
     };
@@ -570,7 +563,10 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
 #[tokio::test]
 async fn oversized_snapshot_and_websocket_message_fail_closed_then_recover() {
     let mut mock = Mock::new().await;
-    let mut h = Harness::start(std::mem::take(&mut mock.settings));
+    let mut h = Harness::start(std::mem::replace(
+        &mut mock.settings,
+        Settings::for_protocol::<TestAdapter>(),
+    ));
     mock.request("/metadata")
         .await
         .send(Response::ok(METADATA))

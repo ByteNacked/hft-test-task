@@ -1,9 +1,11 @@
-//! Aster wire schema. Transport, sequence synchronization and recovery are stage 7/8.
+//! Aster public market-data adapter and wire schema.
+mod adapter;
 use crate::{
     config,
     md::{self, DepthDiff, EventTime, ProtocolError, ReceiveTime, Snapshot},
     numeric::InstrumentRules,
 };
+pub use adapter::AsterAdapter;
 use serde::Deserialize;
 
 pub const WS_URL: &str = "wss://fstream.asterdex.com/stream?streams=ethusdt@depth@100ms";

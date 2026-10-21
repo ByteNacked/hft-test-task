@@ -171,6 +171,10 @@ impl Backoff {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
     #[test]
     fn retry_policy_bounds_growth_reset_and_server_delay() {
         let mut backoff = Backoff::new();
@@ -191,5 +195,29 @@ mod tests {
         assert!(delay >= Duration::from_secs(58) && delay <= server_delay);
         headers.insert(reqwest::header::RETRY_AFTER, "invalid".parse().unwrap());
         assert_eq!(retry_after(&headers), None);
+    }
+    #[tokio::test]
+    async fn http_body_is_bounded_with_and_without_content_length() {
+        for chunked in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 1024];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                let response = if chunked {
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n1234\r\n4\r\n5678\r\n0\r\n\r\n"
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n12345678"
+                };
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
+            let result = get_body(reqwest::Client::new(), format!("http://{addr}"), 7).await;
+            assert!(matches!(
+                result,
+                Err(AdapterError::Protocol(ProtocolError::BodyTooLarge))
+            ));
+            server.await.unwrap();
+        }
     }
 }

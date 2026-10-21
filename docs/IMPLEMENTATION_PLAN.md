@@ -1,6 +1,6 @@
 # План реализации
 
-Этапы **1–7 реализованы**. Этапы 8–11 ещё не начаты. [README](../README.md) содержит стек, формулы и параметры; [архитектура](ARCHITECTURE.md) — потоки и владение данными.
+Этапы **1–8 реализованы**. Этапы 9–11 ещё не начаты. [README](../README.md) содержит стек, формулы и параметры; [архитектура](ARCHITECTURE.md) — потоки и владение данными.
 
 ## Зафиксированные решения
 
@@ -110,9 +110,9 @@
 
 **Готово:** mock проходит `Offline → Online → Offline → Online` с правильными timestamps.
 
-## Этап 8. Aster
+## Этап 8. Aster — готово
 
-**Файл:** `aster.rs`, fixtures и integration tests.
+**Файлы:** `aster/adapter.rs`, общий цикл `md/feed.rs`, `md/feed/*tests.rs` и fixtures.
 
 - Реализовать `MDAdapter` с Aster endpoints/моделями; переиспользовать книгу, публикацию и общие механизмы `md`.
 - Отдельно проверить правила snapshot/diff по документации Aster.
@@ -166,9 +166,9 @@ Deadline робота проверять с управляемым времен�
 
 **Готово:** воспроизводимый release replay и отчёт с фактическими измерениями.
 
-## Проверка этапов 1–7
+## Проверка этапов 1–8
 
-41 unit/integration/property-тест: точность и логирование ошибок, merge против `BTreeMap`, rollback обеих сторон, три предвыделенных слота и конкурентный читатель, polling/deadline/stop, обе схемы и лимиты; bridge/gap/дубли, задержанный HTTP и старый parse worker, Close/EOF, malformed/oversized сообщения, overflow очереди, таймауты, Ping/Pong, Retry-After и shutdown. Fixtures синтетические; [источники](../tests/fixtures/README.md). TLS provider — AWS-LC; проверен локальный WS handshake без TLS; public TLS/live smoke ещё не выполнен.
+51 unit/integration/property-тест: точность и логирование ошибок, merge против `BTreeMap`, rollback обеих сторон, три предвыделенных слота и конкурентный читатель, polling/deadline/stop, обе схемы и лимиты; bridge/gap/дубли, задержанный HTTP и старый parse worker, Close/EOF, malformed/oversized сообщения, overflow очереди, таймауты, Ping/Pong, Retry-After и shutdown для обеих бирж. Два параллельных гейта проверены при задержке snapshot, backoff, gap и остановке одного из них. Fixtures синтетические; [источники](../tests/fixtures/README.md). TLS provider — AWS-LC; проверен локальный WS handshake без TLS; public TLS/live smoke ещё не выполнен.
 
 Команды: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --release --locked`. Live smoke и измерения относятся к последующим этапам.
 
@@ -188,8 +188,8 @@ cargo test --locked
 
 В конце — `cargo build --release --locked`, `cargo bench --locked` и release replay. Локальные WS/HTTP mocks входят в `cargo test` и требуют loopback-сокетов; public smoke запускается отдельно.
 
-- [ ] Два независимых snapshot + diff гейта, все известные уровни сохранены.
-- [ ] Только `Online/Offline`; `Offline` публикуется до ожидания восстановления.
+- [x] Два независимых snapshot + diff гейта, все известные уровни сохранены.
+- [x] Только `Online/Offline`; `Offline` публикуется до ожидания восстановления.
 - [x] Robot читает опубликованные `book::BookView` и обосновывает решения данными обеих книг.
 - [ ] Unit/property/concurrency/recovery-тесты, fmt и Clippy проходят.
 - [ ] Измерения, запуск и ограничения документированы; trading API не используется.
