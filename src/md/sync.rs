@@ -14,34 +14,37 @@ pub(crate) enum Applied {
 pub(crate) struct SyncedBook {
     pub(crate) book: OrderBook,
     snapshot_id: Option<u64>,
-    last: Option<DepthDiff>,
+    last: Box<DepthDiff>,
+    ready: bool,
 }
 impl SyncedBook {
     pub(crate) fn new() -> Result<Self, AdapterError> {
         Ok(Self {
             book: OrderBook::new(crate::config::BOOK_LEVELS)?,
             snapshot_id: None,
-            last: None,
+            last: Box::default(),
+            ready: false,
         })
     }
     pub(crate) fn reset(&mut self) {
         self.snapshot_id = None;
-        self.last = None;
+        self.ready = false;
     }
     pub(crate) fn load(&mut self, snapshot: &Snapshot) -> Result<(), AdapterError> {
         self.book.load_snapshot(snapshot)?;
         self.snapshot_id = Some(snapshot.last_update_id);
-        self.last = None;
+        self.ready = false;
         Ok(())
     }
     pub(crate) fn ready(&self) -> bool {
-        self.last.is_some()
+        self.ready
     }
     pub(crate) fn has_snapshot(&self) -> bool {
         self.snapshot_id.is_some()
     }
-    pub(crate) fn apply(&mut self, diff: DepthDiff) -> Result<Applied, AdapterError> {
-        if let Some(last) = &self.last {
+    pub(crate) fn apply(&mut self, diff: &mut Box<DepthDiff>) -> Result<Applied, AdapterError> {
+        if self.ready {
+            let last = &self.last;
             if diff.final_id == last.final_id {
                 // Local receive timestamps differ on retransmission. Exchange time and
                 // normalized levels/IDs must match exactly; otherwise this is a conflict.
@@ -72,8 +75,11 @@ impl SyncedBook {
                 return Err(AdapterError::Sequence("snapshot bridge missing"));
             }
         }
-        self.book.apply_diff(&diff)?;
-        self.last = Some(diff);
+        self.book.apply_diff(diff)?;
+        // Swap owners, not the 128 KiB payloads. The previous diff becomes the
+        // next decode workspace; errors and duplicates retain the accepted diff.
+        std::mem::swap(&mut self.last, diff);
+        self.ready = true;
         Ok(Applied::Update)
     }
 }

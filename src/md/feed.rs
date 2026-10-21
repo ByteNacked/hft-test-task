@@ -2,8 +2,8 @@ use crate::{
     book::{BookPublisher, BookStatus},
     config,
     md::{
-        AdapterError, Backoff, MDAdapter, ProtocolError, ReceiveTime, Snapshot, get_body,
-        shutdown_requested,
+        AdapterError, Backoff, DepthDiff, MDAdapter, ProtocolError, ReceiveTime, Snapshot,
+        get_body, shutdown_requested,
         sync::{Applied, SyncedBook},
     },
     numeric::InstrumentRules,
@@ -107,6 +107,7 @@ pub(crate) async fn run<P: MDAdapter>(
         client,
         rules,
         synced: Box::new(SyncedBook::new()?),
+        incoming: Box::default(),
         books,
         state: FeedState::Connecting,
         sync_epoch: 0,
@@ -140,6 +141,7 @@ struct Runner<P> {
     client: reqwest::Client,
     rules: InstrumentRules,
     synced: Box<SyncedBook>,
+    incoming: Box<DepthDiff>,
     books: BookPublisher,
     state: FeedState,
     sync_epoch: u64,
@@ -273,9 +275,14 @@ impl<P: MDAdapter> Runner<P> {
         Ok(())
     }
     fn apply(&mut self, frame: Buffered) -> Result<bool, AdapterError> {
-        let diff = P::decode_diff(frame.text.as_bytes(), frame.received, self.rules)?;
-        let final_id = diff.final_id;
-        match self.synced.apply(diff)? {
+        P::decode_diff_into(
+            frame.text.as_bytes(),
+            frame.received,
+            self.rules,
+            &mut self.incoming,
+        )?;
+        let final_id = self.incoming.final_id;
+        match self.synced.apply(&mut self.incoming)? {
             Applied::Update => {
                 self.last_diff_id = Some(final_id);
                 Ok(true)

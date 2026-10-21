@@ -65,11 +65,13 @@ pub trait MDAdapter: Send + Sized + 'static {
     const SNAPSHOT_URL: &'static str;
     fn decode_metadata(body: &[u8]) -> Result<InstrumentRules, ProtocolError>;
     fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError>;
-    fn decode_diff(
+    /// Reuses the output's bounded arrays. On error, its contents must not be applied.
+    fn decode_diff_into(
         body: &[u8],
         received: ReceiveTime,
         rules: InstrumentRules,
-    ) -> Result<DepthDiff, ProtocolError>;
+        out: &mut DepthDiff,
+    ) -> Result<(), ProtocolError>;
     fn run(
         self,
         books: BookPublisher,

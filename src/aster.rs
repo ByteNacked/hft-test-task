@@ -8,7 +8,7 @@ use crate::{
 };
 use crate::{
     config,
-    md::{self, DepthDiff, EventTime, ProtocolError, ReceiveTime, Snapshot},
+    md::{self, DepthDiff, ProtocolError, ReceiveTime, Snapshot},
     numeric::InstrumentRules,
 };
 use serde::Deserialize;
@@ -18,33 +18,6 @@ pub const WS_URL: &str = "wss://fstream.asterdex.com/stream?streams=ethusdt@dept
 pub const METADATA_URL: &str = "https://fapi.asterdex.com/fapi/v3/exchangeInfo";
 pub const SNAPSHOT_URL: &str = "https://fapi.asterdex.com/fapi/v3/depth?symbol=ETHUSDT&limit=1000";
 
-#[derive(Deserialize)]
-struct Wrapper<'a> {
-    #[serde(borrow)]
-    stream: &'a str,
-    #[serde(borrow)]
-    data: Diff<'a>,
-}
-#[derive(Deserialize)]
-struct Diff<'a> {
-    #[serde(borrow)]
-    e: &'a str,
-    s: &'a str,
-    #[serde(rename = "E")]
-    exchange_time: u64,
-    #[serde(rename = "T")]
-    transaction_time: u64,
-    #[serde(rename = "U")]
-    first_id: u64,
-    #[serde(rename = "u")]
-    final_id: u64,
-    #[serde(rename = "pu")]
-    previous_id: u64,
-    #[serde(borrow)]
-    b: &'a serde_json::value::RawValue,
-    #[serde(borrow)]
-    a: &'a serde_json::value::RawValue,
-}
 #[derive(Deserialize)]
 struct Depth<'a> {
     #[serde(rename = "lastUpdateId")]
@@ -89,30 +62,13 @@ impl MDAdapter for AsterAdapter {
     ) -> Result<(), AdapterError> {
         feed::run::<Self>(self.settings, books, shutdown).await
     }
-    fn decode_diff(
+    fn decode_diff_into(
         body: &[u8],
         receive: ReceiveTime,
         rules: InstrumentRules,
-    ) -> Result<DepthDiff, ProtocolError> {
-        md::check_body(body, config::MESSAGE_BYTES)?;
-        let wrapper: Wrapper<'_> = serde_json::from_slice(body)?;
-        let diff = wrapper.data;
-        if wrapper.stream != config::STREAM || diff.e != "depthUpdate" || diff.s != config::SYMBOL {
-            return Err(ProtocolError::WrongStream);
-        }
-        md::validate_timestamp(diff.transaction_time)?;
-        let time = EventTime::new(diff.exchange_time, receive)?;
-        let mut normalized = DepthDiff {
-            first_id: diff.first_id,
-            final_id: diff.final_id,
-            previous_id: diff.previous_id,
-            bids: Default::default(),
-            asks: Default::default(),
-            time,
-        };
-        md::decode_levels(diff.b, &mut normalized.bids)?;
-        md::decode_levels(diff.a, &mut normalized.asks)?;
-        md::normalize_diff(normalized, rules)
+        out: &mut DepthDiff,
+    ) -> Result<(), ProtocolError> {
+        md::decode_diff_into::<false>(body, receive, rules, out)
     }
     fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError> {
         md::check_body(body, config::MESSAGE_BYTES)?;

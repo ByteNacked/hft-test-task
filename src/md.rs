@@ -1,5 +1,7 @@
 //! Market-data adapter contract and transport-independent normalized data.
 mod adapter;
+mod diff;
+pub(crate) use diff::decode_into as decode_diff_into;
 pub(crate) mod feed;
 pub(crate) mod sync;
 use crate::{
@@ -53,6 +55,22 @@ pub struct DepthDiff {
     pub asks: DiffSide,
     pub time: EventTime,
 }
+impl Default for DepthDiff {
+    /// Empty workspace; decode successfully before applying it to a book.
+    fn default() -> Self {
+        Self {
+            first_id: 0,
+            final_id: 0,
+            previous_id: 0,
+            bids: Default::default(),
+            asks: Default::default(),
+            time: EventTime {
+                exchange_time: 0,
+                platform_time: Instant::now(),
+            },
+        }
+    }
+}
 #[derive(Debug)]
 pub struct Snapshot {
     pub last_update_id: u64,
@@ -87,15 +105,15 @@ pub(crate) fn check_body(body: &[u8], limit: usize) -> Result<(), ProtocolError>
     }
 }
 pub(crate) fn normalize_diff(
-    mut diff: DepthDiff,
+    diff: &mut DepthDiff,
     rules: InstrumentRules,
-) -> Result<DepthDiff, ProtocolError> {
+) -> Result<(), ProtocolError> {
     if diff.first_id > diff.final_id || diff.previous_id >= diff.final_id {
         return Err(ProtocolError::UpdateIds);
     }
     prepare(&mut diff.bids, true, rules)?;
     prepare(&mut diff.asks, false, rules)?;
-    Ok(diff)
+    Ok(())
 }
 pub(crate) fn normalize_snapshot(
     mut snapshot: Snapshot,
@@ -218,39 +236,40 @@ impl<'de> Deserialize<'de> for Symbols<'de> {
     }
 }
 
-/// Fill bounded arrays in place: deriving Deserialize for a 4096-element ArrayVec
-/// through nested wire structs otherwise creates large temporary stack copies.
+/// Decode snapshot levels into bounded storage without a temporary side.
 pub(crate) fn decode_levels<const N: usize>(
     raw: &serde_json::value::RawValue,
     out: &mut arrayvec::ArrayVec<crate::book::Level, N>,
 ) -> Result<(), ProtocolError> {
-    use serde::de::{DeserializeSeed, SeqAccess, Visitor};
-    struct Seed<'a, const N: usize>(&'a mut arrayvec::ArrayVec<crate::book::Level, N>);
-    impl<'de, const N: usize> DeserializeSeed<'de> for Seed<'_, N> {
-        type Value = ();
-        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
-            d.deserialize_seq(self)
-        }
-    }
-    impl<'de, const N: usize> Visitor<'de> for Seed<'_, N> {
-        type Value = ();
-        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("bounded array of price/quantity pairs")
-        }
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-            self.0.clear();
-            while let Some(level) = seq.next_element()? {
-                self.0
-                    .try_push(level)
-                    .map_err(|_| serde::de::Error::custom("too many levels"))?;
-            }
-            Ok(())
-        }
-    }
+    use serde::de::DeserializeSeed;
     let mut deserializer = serde_json::Deserializer::from_str(raw.get());
-    Seed(out).deserialize(&mut deserializer)?;
+    LevelsSeed(out).deserialize(&mut deserializer)?;
     deserializer.end()?;
     Ok(())
+}
+
+/// Deserialize directly into the caller's bounded array, without a temporary side.
+struct LevelsSeed<'a, const N: usize>(&'a mut arrayvec::ArrayVec<crate::book::Level, N>);
+impl<'de, const N: usize> serde::de::DeserializeSeed<'de> for LevelsSeed<'_, N> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        d.deserialize_seq(self)
+    }
+}
+impl<'de, const N: usize> serde::de::Visitor<'de> for LevelsSeed<'_, N> {
+    type Value = ();
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("bounded array of price/quantity pairs")
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        self.0.clear();
+        while let Some(level) = seq.next_element()? {
+            self.0
+                .try_push(level)
+                .map_err(|_| serde::de::Error::custom("too many levels"))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

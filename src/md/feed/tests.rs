@@ -21,6 +21,7 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
         client: reqwest::Client::new(),
         rules,
         synced: Box::new(SyncedBook::new().unwrap()),
+        incoming: Box::default(),
         books,
         state: FeedState::Connecting,
         sync_epoch: 0,

@@ -2,13 +2,13 @@ use super::*;
 use crate::{md::EventTime, numeric::SCALE, test_support::*};
 use std::time::{Duration, Instant};
 
-fn event(now: Instant, first: u64, last: u64, previous: u64, quantity: i64) -> DepthDiff {
+fn event(now: Instant, first: u64, last: u64, previous: u64, quantity: i64) -> Box<DepthDiff> {
     let mut event = diff(now);
     event.first_id = first;
     event.final_id = last;
     event.previous_id = previous;
     event.bids.push(level(99, quantity));
-    event
+    Box::new(event)
 }
 #[test]
 fn snapshot_bridge_is_inclusive_and_futures_ids_need_not_be_adjacent() {
@@ -17,18 +17,22 @@ fn snapshot_bridge_is_inclusive_and_futures_ids_need_not_be_adjacent() {
         let mut synced = SyncedBook::new().unwrap();
         synced.load(&snapshot(100, SCALE, 6)).unwrap();
         assert_eq!(
-            synced.apply(event(now, 98, 99, 97, 2 * SCALE)).unwrap(),
+            synced
+                .apply(&mut event(now, 98, 99, 97, 2 * SCALE))
+                .unwrap(),
             Applied::BeforeSnapshot
         );
         assert_eq!(synced.book.event_time(), None);
         assert_eq!(
             synced
-                .apply(event(now, first, last, 98, 2 * SCALE))
+                .apply(&mut event(now, first, last, 98, 2 * SCALE))
                 .unwrap(),
             Applied::Update
         );
         assert_eq!(
-            synced.apply(event(now, 110, 120, last, 3 * SCALE)).unwrap(),
+            synced
+                .apply(&mut event(now, 110, 120, last, 3 * SCALE))
+                .unwrap(),
             Applied::Update
         );
         assert_eq!(synced.book.bids()[0].qty.raw(), 3 * SCALE);
@@ -39,10 +43,18 @@ fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
     let now = Instant::now();
     let mut synced = SyncedBook::new().unwrap();
     synced.load(&snapshot(100, SCALE, 6)).unwrap();
-    synced.apply(event(now, 100, 102, 99, 2 * SCALE)).unwrap();
+    synced
+        .apply(&mut event(now, 100, 102, 99, 2 * SCALE))
+        .unwrap();
     assert_eq!(
         synced
-            .apply(event(now + Duration::from_secs(1), 100, 102, 99, 2 * SCALE))
+            .apply(&mut event(
+                now + Duration::from_secs(1),
+                100,
+                102,
+                99,
+                2 * SCALE
+            ))
             .unwrap(),
         Applied::Duplicate
     );
@@ -53,7 +65,7 @@ fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
         (103, 104, 101, 2 * SCALE),
     ] {
         assert!(matches!(
-            synced.apply(event(now, first, last, previous, qty)),
+            synced.apply(&mut event(now, first, last, previous, qty)),
             Err(AdapterError::Sequence(_))
         ));
         assert_eq!(synced.book.bids()[0].qty.raw(), 2 * SCALE);
@@ -62,13 +74,13 @@ fn duplicate_ignores_receive_time_but_conflicts_regressions_and_gaps_fail() {
     let mut conflict = event(now, 100, 102, 99, 2 * SCALE);
     conflict.time = EventTime::new(123, now).unwrap();
     assert!(matches!(
-        synced.apply(conflict),
+        synced.apply(&mut conflict),
         Err(AdapterError::Sequence(_))
     ));
     synced.reset();
     synced.load(&snapshot(100, SCALE, 6)).unwrap();
     assert!(matches!(
-        synced.apply(event(now, 101, 102, 100, SCALE)),
+        synced.apply(&mut event(now, 101, 102, 100, SCALE)),
         Err(AdapterError::Sequence(_))
     ));
     assert!(!synced.ready());
