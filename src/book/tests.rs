@@ -209,3 +209,69 @@ fn sparse_bitmap_boundaries_rollback_and_snapshot_replacement() {
     assert_eq!(book.asks().collect::<Vec<_>>(), initial.asks.as_slice());
     assert_eq!(book.event_time(), None);
 }
+
+#[test]
+fn best_groups_follow_insert_delete_rollback_and_snapshot() {
+    let now = Instant::now();
+    let mut book = OrderBook::new(price(1)).unwrap();
+    let initial = crate::md::Snapshot {
+        last_update_id: 100,
+        bids: [8192, 4096, 4095, 4094, 4093, 64, 63, 1]
+            .into_iter()
+            .map(|p| level(p, SCALE))
+            .collect(),
+        asks: [
+            16383,
+            16384,
+            16385,
+            20480,
+            24576,
+            32768,
+            65536,
+            BOOK_PRICE_SLOTS as i64 - 1,
+        ]
+        .into_iter()
+        .map(|p| level(p, SCALE))
+        .collect(),
+    };
+    book.load_snapshot(&initial).unwrap();
+    let mut change = diff(now);
+    change.bids.push(level(12288, 2 * SCALE));
+    change.asks.push(level(12289, 2 * SCALE));
+    book.apply_diff(&change).unwrap();
+    assert_eq!(book.bids().next().unwrap(), change.bids[0]);
+    assert_eq!(book.asks().next().unwrap(), change.asks[0]);
+
+    change.bids[0].qty = qty(3 * SCALE);
+    change.asks[0].qty = qty(3 * SCALE);
+    book.apply_diff(&change).unwrap();
+    assert_eq!(book.bids().next().unwrap(), change.bids[0]);
+    assert_eq!(book.asks().next().unwrap(), change.asks[0]);
+
+    // Empty the best groups, including the original snapshot's best prices.
+    change.bids.clear();
+    change.asks.clear();
+    change.bids.extend([level(12288, 0), level(8192, 0)]);
+    change.asks.extend([level(12289, 0), level(16383, 0)]);
+    book.apply_diff(&change).unwrap();
+    assert_eq!(book.bids().collect::<Vec<_>>(), initial.bids[1..]);
+    assert_eq!(book.asks().collect::<Vec<_>>(), initial.asks[1..]);
+
+    // Rollback must restore an emptied side and remove the other side's new best.
+    change.bids.clear();
+    change.asks.clear();
+    change
+        .bids
+        .extend(book.bids().map(|l| level(l.price.raw(), 0)));
+    change.asks.push(level(10000, SCALE));
+    assert_eq!(book.apply_diff(&change), Err(BookError::EmptySide));
+    assert_eq!(book.bids().collect::<Vec<_>>(), initial.bids[1..]);
+    assert_eq!(book.asks().collect::<Vec<_>>(), initial.asks[1..]);
+
+    // A new snapshot starts in completely different bitmap groups.
+    let replacement = snapshot(500_000, SCALE, 6);
+    book.load_snapshot(&replacement).unwrap();
+    book.apply_diff(&diff(now)).unwrap();
+    assert_eq!(book.bids().collect::<Vec<_>>(), replacement.bids.as_slice());
+    assert_eq!(book.asks().collect::<Vec<_>>(), replacement.asks.as_slice());
+}

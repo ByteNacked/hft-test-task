@@ -77,8 +77,8 @@ impl OrderBook {
                 .ok_or(NumericError::Overflow)?,
         )?;
         Ok(Self {
-            bids: Side::new(),
-            asks: Side::new(),
+            bids: Side::new(true),
+            asks: Side::new(false),
             tick_size,
             max_price,
             coverage: None,
@@ -86,10 +86,10 @@ impl OrderBook {
         })
     }
     pub fn bids(&self) -> impl Iterator<Item = Level> + '_ {
-        self.bids.levels(self.tick_size, true)
+        self.bids.levels(self.tick_size)
     }
     pub fn asks(&self) -> impl Iterator<Item = Level> + '_ {
-        self.asks.levels(self.tick_size, false)
+        self.asks.levels(self.tick_size)
     }
     pub fn event_time(&self) -> Option<EventTime> {
         self.event_time
