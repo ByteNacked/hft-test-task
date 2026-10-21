@@ -1,6 +1,7 @@
 use crate::{
     book::{BookError, BookPublisher, BookStatus},
     config,
+    logging::{self, FeedEvent},
     md::{
         AdapterError, Backoff, DepthDiff, MDAdapter, ProtocolError, ReceiveTime, Snapshot,
         get_body, shutdown_requested,
@@ -27,7 +28,7 @@ use tokio_tungstenite::{
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FeedState {
+pub(crate) enum FeedState {
     Connecting,
     Buffering,
     SnapshotLoading,
@@ -69,7 +70,7 @@ pub(crate) async fn run<P: MDAdapter>(
     books: BookPublisher,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), AdapterError> {
-    tracing::debug!(venue=P::NAME, thread_id=?std::thread::current().id(), "feed task started");
+    logging::feed(P::NAME, FeedEvent::Started(std::thread::current().id()));
     let client = reqwest::Client::builder()
         .timeout(settings.http_timeout)
         .redirect(reqwest::redirect::Policy::none())
@@ -180,7 +181,7 @@ impl<P: MDAdapter> Runner<P> {
             let error = match connection {
                 Ok(mut ws) => {
                     self.begin_sync(Duration::ZERO)?;
-                    tracing::debug!(venue = P::NAME, "market-data connected");
+                    logging::feed(P::NAME, FeedEvent::Connected);
                     let result = self.connected(&mut ws, shutdown).await;
                     // Publish before any potentially blocking close/backoff operation.
                     self.offline()?;
@@ -220,9 +221,18 @@ impl<P: MDAdapter> Runner<P> {
         }
     }
     fn log_state(&mut self) {
-        tracing::debug!(venue=P::NAME, state=?self.state, last_diff_id=self.last_diff_id,
-            exchange_time=self.synced.book.event_time().map(|time| time.exchange_time()),
-            "feed state");
+        logging::feed(
+            P::NAME,
+            FeedEvent::State {
+                state: self.state,
+                last_diff_id: self.last_diff_id,
+                exchange_time: self
+                    .synced
+                    .book
+                    .event_time()
+                    .map(|time| time.exchange_time()),
+            },
+        );
         self.next_log = Instant::now() + config::REPORT_INTERVAL;
     }
     fn offline(&mut self) -> Result<(), AdapterError> {
@@ -239,16 +249,7 @@ impl<P: MDAdapter> Runner<P> {
     fn log_status(&mut self, online: bool) {
         if self.online != online {
             self.online = online;
-            if online {
-                tracing::info!(name: "instrument_online",
-                    venue = P::NAME,
-                    symbol = config::SYMBOL,
-                    "instrument Online"
-                );
-            } else {
-                tracing::info!(name: "instrument_offline", venue=P::NAME,
-                    symbol=config::SYMBOL, "instrument Offline");
-            }
+            logging::feed(P::NAME, FeedEvent::Status(online));
         }
     }
     fn begin_sync(&mut self, delay: Duration) -> Result<(), AdapterError> {

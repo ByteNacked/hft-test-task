@@ -3,7 +3,13 @@ use hft_test_task::{aster::AsterAdapter, binance::BinanceAdapter, config::Cli, l
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let _log_guard = logging::init_logging();
+    let _log_guard = match logging::init_logging() {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("logging startup failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -46,7 +52,7 @@ fn main() -> ExitCode {
                             BinanceAdapter::default(),
                             AsterAdapter::default(),
                             shutdown,
-                            logging::decision_reporter(),
+                            logging::decision_reporter()?,
                         )
                         .await
                     })

@@ -221,7 +221,7 @@ impl Robot {
             None
         }
     }
-    /// Callback must be nonblocking (for example the bounded tracing writer).
+    /// Callback must be nonblocking (for example enqueueing a decision for the log formatter).
     pub fn spawn(
         mut self,
         stop: Arc<AtomicBool>,

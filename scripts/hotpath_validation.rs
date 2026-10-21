@@ -182,6 +182,9 @@ fn message_index(numbers: &BookNumbers) -> Option<usize> {
 #[test]
 #[ignore]
 fn threaded_hotpath_validation() {
+    #[cfg(feature = "bench-shared-logs")]
+    let _logs = logging::init_logging().unwrap();
+    #[cfg(not(feature = "bench-shared-logs"))]
     let _logs = logging::init_logging();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -221,6 +224,9 @@ fn threaded_hotpath_validation() {
             done,
         };
         let mut feeds = Vec::with_capacity(2);
+        #[cfg(feature = "bench-deferred-logs")]
+        let mut reporter = logging::decision_reporter().unwrap();
+        #[cfg(not(feature = "bench-deferred-logs"))]
         let mut reporter = logging::decision_reporter();
         let mut previous = Bias::Hold;
         runtime

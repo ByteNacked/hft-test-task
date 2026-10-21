@@ -1,14 +1,19 @@
-use std::io::IsTerminal;
+use std::{cell::Cell, io::IsTerminal};
 use tracing_appender::non_blocking::{NonBlockingBuilder, WorkerGuard};
 use tracing_subscriber::{
     EnvFilter,
-    fmt::{
-        FmtContext, FormatEvent, FormatFields,
-        format::Writer,
-        time::{FormatTime, SystemTime},
-    },
+    fmt::{FmtContext, FormatEvent, FormatFields, format::Writer},
     registry::LookupSpan,
 };
+
+mod deferred;
+pub use deferred::decision_reporter;
+pub(crate) use deferred::{FeedEvent, feed};
+
+thread_local! {
+    // Only the formatting thread overrides this; other tracing events use wall time now.
+    static EVENT_TIME: Cell<Option<std::time::SystemTime>> = const { Cell::new(None) };
+}
 
 struct TextFormat {
     color: bool,
@@ -44,7 +49,19 @@ where
             write!(writer, "{color}")?;
         }
         write!(writer, "{}:", metadata.level())?;
-        SystemTime.format_time(&mut writer)?;
+        let timestamp = EVENT_TIME.get().unwrap_or_else(std::time::SystemTime::now);
+        let t = time::OffsetDateTime::from(timestamp);
+        write!(
+            writer,
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
+            t.year(),
+            u8::from(t.month()),
+            t.day(),
+            t.hour(),
+            t.minute(),
+            t.second(),
+            t.microsecond()
+        )?;
         write!(writer, ": ")?;
         ctx.field_format().format_fields(writer.by_ref(), event)?;
         if background.is_some() {
@@ -53,7 +70,13 @@ where
         writeln!(writer)
     }
 }
-pub fn init_logging() -> WorkerGuard {
+// Field order keeps the writer alive until every accepted event has been formatted.
+pub struct LoggingGuard {
+    _formatter: deferred::FormatterGuard,
+    _writer: WorkerGuard,
+}
+
+pub fn init_logging() -> std::io::Result<LoggingGuard> {
     let (writer, guard) = NonBlockingBuilder::default()
         .buffered_lines_limit(crate::config::LOG_RECORDS)
         .lossy(true)
@@ -67,20 +90,8 @@ pub fn init_logging() -> WorkerGuard {
             color: std::io::stderr().is_terminal(),
         })
         .init();
-    guard
-}
-
-/// Remember the last bias, so periodic reports stay at DEBUG.
-pub fn decision_reporter() -> impl FnMut(&crate::robot::Decision) {
-    let mut previous = crate::robot::Bias::Hold;
-    move |d| {
-        if d.bias != previous {
-            tracing::info!(name: "bias_changed", bias=?d.bias,
-                binance=%d.binance, aster=%d.aster, "bias changed");
-            previous = d.bias;
-        }
-        tracing::debug!(binance=%d.binance, aster=%d.aster, bias=?d.bias,
-            skew_ms=d.skew.map(|s|s.as_millis() as u64), threshold_bps=d.threshold_bps,
-            "robot decision");
-    }
+    Ok(LoggingGuard {
+        _formatter: deferred::init()?,
+        _writer: guard,
+    })
 }

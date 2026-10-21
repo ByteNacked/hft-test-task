@@ -42,7 +42,7 @@ def main():
     with (checkout / "src/md/feed.rs").open("a") as stream:
         stream.write("\n#[cfg(test)]\nmod validation;\n")
     with (checkout / "Cargo.toml").open("a") as stream:
-        stream.write('\n[features]\nbench-old-api = []\nbench-price-slots = []\nbench-indexed-diff = []\n')
+        stream.write('\n[features]\nbench-old-api = []\nbench-price-slots = []\nbench-indexed-diff = []\nbench-deferred-logs = []\nbench-shared-logs = []\n')
     # Force rebuilding this copy when sharing Cargo's target directory across revisions.
     (checkout / "src/lib.rs").touch()
     command = ["cargo", "test", "--offline", "--locked", "--release", "--manifest-path", str(checkout / "Cargo.toml"), "--lib"]
@@ -52,6 +52,10 @@ def main():
         command.extend(["--features", "bench-price-slots"])
     if "pub struct IndexedLevel" in (checkout / "src/book.rs").read_text():
         command.extend(["--features", "bench-indexed-diff"])
+    if (checkout / "src/logging/deferred.rs").exists():
+        command.extend(["--features", "bench-shared-logs,bench-deferred-logs"])
+    elif (checkout / "src/logging/decision.rs").exists():
+        command.extend(["--features", "bench-deferred-logs"])
     command.extend(["threaded_hotpath_validation", "--", "--ignored", "--nocapture"])
     env = dict(os.environ, CARGO_TARGET_DIR=str(repo / "target"), RUST_LOG="info", HFT_BENCH_SAMPLES=str(args.samples))
     print(f"Running validation; output: {output}", flush=True)

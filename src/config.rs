@@ -14,6 +14,7 @@ pub const METADATA_BYTES: usize = 8 * MESSAGE_BYTES;
 pub const SYNC_MESSAGES: usize = 2048;
 pub const SYNC_BYTES: usize = 8 * MESSAGE_BYTES;
 pub const LOG_RECORDS: usize = 4096;
+pub const LOG_POLL_INTERVAL: Duration = Duration::from_millis(1);
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 pub const REPLAY_BATCH: usize = 32;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
