@@ -21,7 +21,7 @@ thiserror = "2"
 triple_buffer = "9"
 tracing = "0.1"
 tracing-appender = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["io-util"] }

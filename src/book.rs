@@ -1,6 +1,6 @@
 //! Single-writer book. Scratch is committed only after both sides pass validation.
 mod publication;
-pub use publication::{BookPublisher, BookReader, BookStatus, BookView, StoreError, channel};
+pub use publication::{BookPublisher, BookReader, BookStatus, BookView, channel};
 
 use crate::{
     config::{BOOK_LEVELS, DIFF_LEVELS, ROBOT_LEVELS, SNAPSHOT_LEVELS},
@@ -61,6 +61,10 @@ pub enum BookError {
     CoverageLost,
     #[error("snapshot required before applying diffs")]
     NoSnapshot,
+    #[error("Online requires a covered book and an applied diff")]
+    NotReady,
+    #[error("publication sequence overflow")]
+    SequenceOverflow,
 }
 
 #[derive(Debug)]

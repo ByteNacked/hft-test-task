@@ -2,20 +2,23 @@
 
 [Задание](rust-test.pdf): два независимых публичных market-data фида, локальные стаканы и сигнал без исполнения ордеров.
 
-**Статус:** этапы 1–8 реализованы: ядро, robot и независимые сетевые адаптеры Binance/Aster с восстановлением. 51 тест, включая локальные WS/HTTP mocks. Общий запуск — этап 9; live-подключения и задержки ещё не проверены.
+**Статус:** этапы 1–10 реализованы. 58 тестов проходят; public smoke Binance/Aster успешен. [Результаты и контракт Offline/Hold](docs/VALIDATION.md). Измерения задержек — этап 11.
 [Архитектура](docs/ARCHITECTURE.md) · [План реализации](docs/IMPLEMENTATION_PLAN.md).
 
-## Проверка текущей версии
+## Запуск и проверка
 
 Rust 1.99.1 / edition 2024 закреплён в `rust-toolchain.toml`, зависимости — в `Cargo.lock`.
 
 ```bash
+cargo run --release --locked
+# Ctrl+C или SIGTERM — штатная остановка
 cargo run --locked -- --help
-cargo run --locked -- --check-config
 cargo test --locked
+# Отдельная проверка публичных подключений после release-сборки:
+python3 scripts/public_smoke.py
 ```
 
-CLI проверяет параметры сигнала (`--max-age-ms`, `--max-skew-ms`, `--min-depth-qty`, `--threshold-bps`). Запуск без `--check-config` пока завершается с явной ошибкой: сетевой сервис ещё не подключён.
+CLI проверяет параметры сигнала (`--max-age-ms`, `--max-skew-ms`, `--min-depth-qty`, `--threshold-bps`). Запуск проверяет параметры и подключает обе биржи; текстовые логи идут в stderr (`RUST_LOG=info`). Штатная остановка возвращает 0, ошибка конфигурации/worker — 1, ошибка синтаксиса CLI — 2.
 
 ## Основные решения
 
@@ -76,7 +79,7 @@ Snapshot ограничен 1000 уровнями на сторону: даль�
 | CLI | [`clap` 4.x](https://docs.rs/clap/latest/clap/) | `derive`, `env` |
 | Jitter | [`fastrand` 2.x](https://docs.rs/fastrand/latest/fastrand/) | Отдельный RNG на гейт |
 | Трассировка | [`tracing` 0.1.x](https://docs.rs/tracing/latest/tracing/) | События жизненного цикла, span на соединение |
-| Формат логов | [`tracing-subscriber` 0.3.x](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/) | `env-filter`, `fmt`, `json` |
+| Формат логов | [`tracing-subscriber` 0.3.x](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/) | `env-filter`, `fmt`; человекочитаемый текст |
 | Writer | [`tracing-appender` 0.2.x](https://docs.rs/tracing-appender/latest/tracing_appender/) | Ограниченная lossy-очередь, `WorkerGuard` до shutdown |
 | Задержки | [`hdrhistogram` 7.x](https://docs.rs/hdrhistogram/latest/hdrhistogram/) | Фиксированный диапазон без auto-resize |
 | Эталон чисел | [`rust_decimal` 1.x](https://docs.rs/rust_decimal/latest/rust_decimal/) | Dev-only; без default features, `std` |
@@ -169,7 +172,7 @@ struct Amount(Fp); // USDT
 - `Offline` — старт, gap, плохой кадр, overflow, потеря покрытия, разрыв, восстановление, остановка.
 - `Online` — успешные snapshot/replay и проверка книги.
 
-`Offline` публикуется до ожидания восстановления. Следующий корректный diff сам по себе книгу не восстанавливает. Новый WS увеличивает `connection_epoch`; новый snapshot — `sync_epoch`.
+`Offline` публикуется до ожидания восстановления. Один `Offline` блокирует bias по всему инструменту: робот выдаёт `Hold`, пока обе книги не восстановлены. Сам поток робота и исправный гейт продолжают работу. Следующий корректный diff сам по себе книгу не восстанавливает. Новый WS увеличивает `connection_epoch`; новый snapshot — `sync_epoch`.
 
 | Параметр | Значение |
 | --- | --- |
@@ -185,7 +188,7 @@ struct Amount(Fp); // USDT
 
 Возраст считается от `received_at` последнего применённого WS-события. `exchange_time` и `platform_time` описаны в [разделе временных меток](#временные-метки). Локальный возраст не измеряет задержку до получения сообщения; пороги доступны через CLI.
 
-Ping/Pong/flush обслуживаются постоянно, HTTP 429 учитывает `Retry-After`. При shutdown supervision устанавливает stop-флаг робота и сигнал гейтам: `Offline`, отмена ожиданий/backoff, закрытие соединений с deadline, присоединение всех workers, завершение writer. Panic/неожиданный выход любого worker завершает сервис с ошибкой. Уже начатый `spawn_blocking` не останавливается отменой ожидания; его завершение учитывается отдельно.
+Ping/Pong/flush обслуживаются постоянно, HTTP 429 учитывает `Retry-After`. Supervision проверяет завершение workers каждые 10 мс; этот интервал не участвует в реакции робота. `join()` вызывается только после `is_finished()`. При shutdown supervision устанавливает stop-флаг робота и сигнал гейтам: `Offline`, отмена ожиданий/backoff, закрытие соединений с deadline, присоединение всех workers, завершение writer. Panic/неожиданный выход любого worker завершает сервис с ошибкой. Уже начатый `spawn_blocking` не останавливается отменой ожидания; его завершение учитывается отдельно.
 
 ## Сигнал первой версии
 
@@ -209,19 +212,22 @@ N >  theta * D → ShortBias              # Aster дороже
 
 Первый расчёт выполняется при запуске. Далее polling-цикл проверяет оба буфера, stop-флаг и deadline по `Instant`. `evaluate` вызывается при новой публикации, превышении max-age или наступлении срока секундного вывода. Публикация во время расчёта подхватывается на следующем проходе. Обработанный deadline свежести исключается до нового состояния книги: устаревание даёт `Hold`, но не запускает расчёт на каждой пустой итерации.
 
-Вывод — при изменении направления или статуса любой книги и раз в секунду, включая `Hold`. Искусственной паузы между проверками нет; задержка включает применение diff, копирование книги, доступ к кешу, планирование OS и расчёт. Выигрыш busy polling подтверждается replay.
+Callback — при изменении направления или статуса любой книги и раз в секунду, включая `Hold`. На `INFO` выводится только смена bias. Искусственной паузы между проверками нет; задержка включает применение diff, копирование книги, доступ к кешу, планирование OS и расчёт. Выигрыш busy polling подтверждается replay.
 
 ## Трассировка и статистика
 
-Span на соединение: `venue`, `symbol`, `connection_epoch`. Логируем подключения, восстановление, смену статуса, решения и агрегаты ошибок; не каждый тик. `tracing-appender`: `lossy(true)`, `buffered_lines_limit(4096)`; потери — через `ErrorCounter`. Подготовка записи выполняется вызывающим потоком, запись — отдельным writer.
+Формат: `LEVEL:timestamp: событие параметры`, без имени модуля и span. `INFO` — только переходы инструмента Online/Offline (venue, symbol) и смена bias робота (`Aster bias changed`, поля bias и symbol). Начальное состояние Offline/Hold не считается переходом. `WARN` — восстановление фида; `ERROR` — ошибки worker, запуска и числовой точности. `DEBUG` — подключения, shutdown, статусы и служебные метрики; `TRACE` — числа решений и счётчики фидов. Фильтр — `RUST_LOG`, по умолчанию `info` (включает WARN/ERROR).
 
-`FeedMetrics` передаётся supervision через отдельный предвыделенный triple buffer, выводится раз в секунду. Содержит состояние/epoch/последнюю ошибку, received frames, applied diffs, snapshots, stale snapshots, gaps, resyncs, overflows, decode errors, coverage lost, duplicates, reconnects и возраст данных. Счётчики сохраняются между reconnect/resync. Отдельно считаем пропуски публикаций и потери логов.
+`tracing-appender`: `lossy(true)`, очередь 4096 записей; потери — `ErrorCounter`. Форматирование выполняется вызывающим потоком, запись в stderr — отдельным writer.
+
+`FeedMetrics` передаётся supervision через отдельный предвыделенный triple buffer, логируется на DEBUG/TRACE раз в секунду. Содержит состояние/epoch/последнюю ошибку, received frames, applied diffs, snapshots, stale snapshots, gaps, resyncs, overflows, decode errors, coverage lost, duplicates, reconnects и возраст данных. Счётчики сохраняются между reconnect/resync. `RobotMetrics` считает пропущенные публикации по sequence каждого читателя; это не gaps входного фида. Потери очереди логов выводятся отдельно как `dropped_logs`.
 
 ## Структура и проверка реализации
 
 | Модуль | Ответственность |
 | --- | --- |
-| `main`, `config` | CLI, запуск, supervision, shutdown, проверенные параметры |
+| `main`, `config` | CLI, сигналы ОС, runtime основного потока и параметры |
+| `service` | Запуск workers, supervision, метрики, shutdown и join |
 | `numeric` | `Fp`, newtype, парсинг и арифметика |
 | `book` | Diff-книга, merge, покрытие, `BookView`, статусы и публикация |
 | `md` | Трейт `MDAdapter`, внутренние состояния и ошибки |

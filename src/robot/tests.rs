@@ -191,16 +191,21 @@ fn updates_arriving_during_callback_are_seen_next_iteration() {
     let stop = Arc::new(AtomicBool::new(false));
     let callback_stop = stop.clone();
     let (send, recv) = mpsc::channel();
+    let (metrics, mut metrics_reader) = triple_buffer::TripleBuffer::default().split();
     // Callback executes after the calculation while the worker cannot poll.
-    let handle = robot.spawn(stop, move |decision| {
-        send.send(decision.aster.status).unwrap();
-        if decision.aster.status == BookStatus::Offline {
-            bw.publish(&book, BookStatus::Online).unwrap();
-            aw.publish(&book, BookStatus::Online).unwrap();
-        } else {
-            callback_stop.store(true, Ordering::Relaxed);
-        }
-    });
+    let handle = robot
+        .spawn(stop, metrics, move |decision| {
+            send.send(decision.aster.status).unwrap();
+            if decision.aster.status == BookStatus::Offline {
+                for _ in 0..3 {
+                    bw.publish(&book, BookStatus::Online).unwrap();
+                }
+                aw.publish(&book, BookStatus::Online).unwrap();
+            } else {
+                callback_stop.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
     assert_eq!(
         recv.recv_timeout(Duration::from_secs(2)).unwrap(),
         BookStatus::Offline
@@ -210,6 +215,12 @@ fn updates_arriving_during_callback_are_seen_next_iteration() {
         BookStatus::Online
     );
     handle.join().unwrap();
+    metrics_reader.update();
+    assert_eq!(
+        metrics_reader.output_buffer().binance_skipped_publications,
+        2
+    );
+    assert_eq!(metrics_reader.output_buffer().aster_skipped_publications, 0);
 }
 #[test]
 fn empty_loop_observes_stop_without_publications() {
@@ -217,9 +228,15 @@ fn empty_loop_observes_stop_without_publications() {
     let (_, ar) = book::channel(16).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let (send, recv) = mpsc::channel();
-    let handle = Robot::new(br, ar, Default::default()).spawn(stop.clone(), move |_| {
-        let _ = send.send(());
-    });
+    let handle = Robot::new(br, ar, Default::default())
+        .spawn(
+            stop.clone(),
+            triple_buffer::TripleBuffer::default().split().0,
+            move |_| {
+                let _ = send.send(());
+            },
+        )
+        .unwrap();
     recv.recv_timeout(Duration::from_secs(2)).unwrap();
     stop.store(true, Ordering::Relaxed);
     let (done, finished) = mpsc::channel();

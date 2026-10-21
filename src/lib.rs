@@ -9,3 +9,5 @@ pub mod robot;
 
 #[cfg(test)]
 mod test_support;
+
+pub mod service;

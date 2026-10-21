@@ -1,6 +1,6 @@
 # План реализации
 
-Этапы **1–8 реализованы**. Этапы 9–11 ещё не начаты. [README](../README.md) содержит стек, формулы и параметры; [архитектура](ARCHITECTURE.md) — потоки и владение данными.
+Этапы **1–10 реализованы**. Этап 11 ещё не завершён. [README](../README.md) содержит стек, формулы и параметры; [архитектура](ARCHITECTURE.md) — потоки и владение данными.
 
 ## Зафиксированные решения
 
@@ -120,9 +120,9 @@
 
 **Готово:** оба гейта выполняют одинаковый внешний контракт; сбой одного не останавливает второй.
 
-## Этап 9. Запуск, supervision и наблюдаемость
+## Этап 9. Запуск, supervision и наблюдаемость — готово
 
-**Файлы:** `main.rs`, `config.rs`, `metrics.rs`, runtime-циклы.
+**Файлы:** `main.rs`, `service.rs`, `config.rs`, `metrics.rs`, runtime-циклы.
 
 - Предвыделить буферы, независимо запустить два гейта и отдельный OS-поток робота с двумя `Offline`.
 - В основном потоке обслуживать метрики и завершение всех workers без блокирующего `join()` работающего worker.
@@ -132,9 +132,9 @@
 
 **Готово:** одна команда запуска, решения/метрики и штатная остановка во всех фазах.
 
-## Этап 10. Проверки сервиса целиком
+## Этап 10. Проверки сервиса целиком — готово
 
-**Файлы:** `tests/`, mock-серверы.
+**Файлы:** `src/md/feed/tests/service_tests.rs`, mock-серверы, `scripts/public_smoke.py`, [результаты проверки](VALIDATION.md).
 
 | Сценарий | Ожидание |
 | --- | --- |
@@ -166,11 +166,11 @@ Deadline робота проверять с управляемым времен�
 
 **Готово:** воспроизводимый release replay и отчёт с фактическими измерениями.
 
-## Проверка этапов 1–8
+## Проверка этапов 1–10
 
-51 unit/integration/property-тест: точность и логирование ошибок, merge против `BTreeMap`, rollback обеих сторон, три предвыделенных слота и конкурентный читатель, polling/deadline/stop, обе схемы и лимиты; bridge/gap/дубли, задержанный HTTP и старый parse worker, Close/EOF, malformed/oversized сообщения, overflow очереди, таймауты, Ping/Pong, Retry-After и shutdown для обеих бирж. Два параллельных гейта проверены при задержке snapshot, backoff, gap и остановке одного из них. Fixtures синтетические; [источники](../tests/fixtures/README.md). TLS provider — AWS-LC; проверен локальный WS handshake без TLS; public TLS/live smoke ещё не выполнен.
+58 unit/integration/property-тестов: точность и логирование ошибок, merge против `BTreeMap`, rollback обеих сторон, три предвыделенных слота и конкурентный читатель, polling/deadline/stop, обе схемы и лимиты; bridge/gap/дубли, задержанный HTTP и старый parse worker, Close/EOF, malformed/oversized сообщения, overflow очереди, таймауты, Ping/Pong, Retry-After и shutdown для обеих бирж. Два параллельных гейта проверены при задержке snapshot, backoff, gap и остановке одного из них. Supervision проверен на error/panic/ранний выход worker и ожидание cleanup без блокировки main runtime. SIGINT/SIGTERM проверены на процессе: exit 0, оба гейта `Stopped`, финальные логи записаны. Fixtures синтетические; [источники](../tests/fixtures/README.md). TLS provider — AWS-LC; локальные WS-тесты и public TLS/live smoke обеих бирж прошли; [результат](VALIDATION.md).
 
-Команды: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --release --locked`. Live smoke и измерения относятся к последующим этапам.
+Команды: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --release --locked`. Live smoke выполнен отдельно; измерения относятся к этапу 11.
 
 ## Начальные параметры
 
@@ -191,5 +191,5 @@ cargo test --locked
 - [x] Два независимых snapshot + diff гейта, все известные уровни сохранены.
 - [x] Только `Online/Offline`; `Offline` публикуется до ожидания восстановления.
 - [x] Robot читает опубликованные `book::BookView` и обосновывает решения данными обеих книг.
-- [ ] Unit/property/concurrency/recovery-тесты, fmt и Clippy проходят.
+- [x] Unit/property/concurrency/recovery-тесты, fmt и Clippy проходят.
 - [ ] Измерения, запуск и ограничения документированы; trading API не используется.

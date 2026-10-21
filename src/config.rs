@@ -22,6 +22,7 @@ pub const WATCHDOG: Duration = Duration::from_secs(3);
 pub const BACKOFF_MIN: Duration = Duration::from_millis(250);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(30);
 pub const BACKOFF_RESET: Duration = Duration::from_secs(30);
+pub const SUPERVISION_INTERVAL: Duration = Duration::from_millis(10);
 pub const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 pub const ROBOT_LEVELS: usize = 5;
 
@@ -92,14 +93,8 @@ impl RobotConfig {
 }
 
 #[derive(Debug, Parser)]
-#[command(
-    version,
-    about = "Binance + Aster ETHUSDT market-data research (offline core)"
-)]
+#[command(version, about = "Binance + Aster ETHUSDT market-data research")]
 pub struct Cli {
-    /// Validate configuration and exit; live adapters are not implemented yet.
-    #[arg(long)]
-    pub check_config: bool,
     #[arg(long, env = "HFT_MAX_AGE_MS", default_value_t = DEFAULT_MAX_AGE_MS)]
     pub max_age_ms: u64,
     #[arg(long, env = "HFT_MAX_SKEW_MS", default_value_t = DEFAULT_MAX_SKEW_MS)]

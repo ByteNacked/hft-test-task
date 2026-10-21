@@ -1,7 +1,7 @@
 use crate::test_support::*;
 use crate::{
     book::OrderBook,
-    book::{self, BookStatus, StoreError},
+    book::{self, BookError, BookStatus},
     numeric::SCALE,
 };
 use std::{
@@ -23,7 +23,7 @@ fn offline_start_and_online_requires_applied_diff() {
     book.load_snapshot(&mut snapshot(100, SCALE, 6)).unwrap();
     assert_eq!(
         writer.publish(&book, BookStatus::Online),
-        Err(StoreError::NotReady)
+        Err(BookError::NotReady)
     );
 }
 #[test]
@@ -65,7 +65,12 @@ fn held_snapshot_is_stable_and_brief_offline_can_be_skipped() {
     assert!(reader.update());
     assert_eq!(reader.view().sequence(), 3);
     assert_eq!(reader.view().status(), BookStatus::Online);
+    assert_eq!(reader.skipped_publications(), 1);
     assert!(!reader.update());
+    assert_eq!(reader.skipped_publications(), 1);
+    writer.publish(&book, BookStatus::Online).unwrap();
+    reader.update();
+    assert_eq!(reader.skipped_publications(), 1);
 }
 #[test]
 fn concurrent_slow_reader_sees_complete_versions() {

@@ -24,6 +24,7 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_with_config,
     tungstenite::{self, Message, Utf8Bytes, protocol::WebSocketConfig},
 };
+use tracing::Instrument;
 use triple_buffer::Input;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -127,6 +128,7 @@ pub(crate) async fn run<P: Protocol>(
         next_snapshot: Instant::now(),
         sync_deadline: Instant::now(),
         live_since: None,
+        online: false,
     };
     let result = runner.run(&mut shutdown).await;
     // No parse worker is detached: an already running spawn_blocking cannot be cancelled.
@@ -157,6 +159,7 @@ struct Runner<P> {
     next_snapshot: Instant,
     sync_deadline: Instant,
     live_since: Option<Instant>,
+    online: bool,
 }
 impl<P: Protocol> Runner<P> {
     async fn run(&mut self, shutdown: &mut watch::Receiver<bool>) -> Result<(), AdapterError> {
@@ -186,12 +189,18 @@ impl<P: Protocol> Runner<P> {
                         .checked_add(1)
                         .ok_or(AdapterError::EpochOverflow)?;
                     self.begin_sync(Duration::ZERO)?;
-                    tracing::info!(
+                    tracing::debug!(
                         venue = P::NAME,
                         connection_epoch = self.stats.connection_epoch,
                         "market-data connected"
                     );
-                    let result = self.connected(&mut ws, shutdown).await;
+                    let span = tracing::debug_span!(
+                        "market_data",
+                        venue = P::NAME,
+                        symbol = config::SYMBOL,
+                        connection_epoch = self.stats.connection_epoch
+                    );
+                    let result = self.connected(&mut ws, shutdown).instrument(span).await;
                     // Publish before any potentially blocking close/backoff operation.
                     self.offline()?;
                     let _ = timeout(config::CLOSE_TIMEOUT, ws.close(None)).await;
@@ -219,8 +228,26 @@ impl<P: Protocol> Runner<P> {
         }
     }
     fn offline(&mut self) -> Result<(), AdapterError> {
-        self.books.publish(&self.synced.book, BookStatus::Offline)?;
+        self.books
+            .publish(&self.synced.book, BookStatus::Offline)
+            .map_err(AdapterError::Publication)?;
+        self.log_status(false);
         Ok(())
+    }
+    fn log_status(&mut self, online: bool) {
+        if self.online != online {
+            self.online = online;
+            if online {
+                tracing::info!(name: "instrument_online",
+                    venue = P::NAME,
+                    symbol = config::SYMBOL,
+                    "instrument Online"
+                );
+            } else {
+                tracing::info!(name: "instrument_offline", venue=P::NAME,
+                    symbol=config::SYMBOL, "instrument Offline");
+            }
+        }
     }
     fn begin_sync(&mut self, delay: Duration) -> Result<(), AdapterError> {
         self.stats.sync_epoch = self
@@ -278,7 +305,7 @@ impl<P: Protocol> Runner<P> {
         };
         self.stats.last_fault = Some(fault);
         self.metrics.write(self.stats);
-        tracing::warn!(venue=P::NAME, sync_epoch=self.stats.sync_epoch, %error, "market-data recovery");
+        tracing::warn!(venue=P::NAME, %error, "market-data recovery");
     }
     fn enqueue(&mut self, text: Utf8Bytes, received: ReceiveTime) -> Result<(), AdapterError> {
         if self.queue.len() == self.settings.queue_messages
@@ -292,9 +319,11 @@ impl<P: Protocol> Runner<P> {
     }
     fn apply(&mut self, frame: Buffered) -> Result<bool, AdapterError> {
         let diff = P::decode_diff(frame.text.as_bytes(), frame.received, self.rules)?;
+        let final_id = diff.final_id;
         match self.synced.apply(diff)? {
             Applied::Update => {
                 self.stats.applied_diffs += 1;
+                self.stats.last_diff_id = Some(final_id);
                 self.stats.last_received_at = Some(frame.received.received_at());
                 Ok(true)
             }
@@ -315,7 +344,10 @@ impl<P: Protocol> Runner<P> {
         if Instant::now() >= Instant::from_std(received) + self.settings.watchdog {
             return Err(AdapterError::Timeout("data watchdog"));
         }
-        self.books.publish(&self.synced.book, BookStatus::Online)?;
+        self.books
+            .publish(&self.synced.book, BookStatus::Online)
+            .map_err(AdapterError::Publication)?;
+        self.log_status(true);
         self.live_since.get_or_insert_with(Instant::now);
         self.stats.state = FeedState::Live;
         Ok(())

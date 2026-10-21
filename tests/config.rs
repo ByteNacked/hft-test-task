@@ -2,7 +2,7 @@ use clap::Parser;
 use hft_test_task::config::Cli;
 #[test]
 fn validates_cli_values() {
-    let default = Cli::try_parse_from(["hft", "--check-config"]).unwrap();
+    let default = Cli::try_parse_from(["hft"]).unwrap();
     assert!(default.robot_config().is_ok());
     for args in [
         ["--max-age-ms", "0"],

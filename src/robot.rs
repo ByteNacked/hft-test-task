@@ -1,6 +1,7 @@
 use crate::{
     book::{BookReader, BookStatus, BookView},
     config::{REPORT_INTERVAL, ROBOT_LEVELS, RobotConfig},
+    metrics::RobotMetrics,
     numeric::{NumericError, Price},
 };
 use std::{
@@ -236,18 +237,28 @@ impl Robot {
     pub fn spawn(
         mut self,
         stop: Arc<AtomicBool>,
+        mut metrics: triple_buffer::Input<RobotMetrics>,
         mut report: impl FnMut(&Decision) + Send + 'static,
-    ) -> JoinHandle<()> {
-        thread::spawn(move || {
+    ) -> std::io::Result<JoinHandle<()>> {
+        thread::Builder::new().name("robot".into()).spawn(move || {
             // Relaxed: this flag carries no data; triple_buffer synchronizes book ownership.
             while !stop.load(Ordering::Relaxed) {
                 if let Some(decision) = self.poll_with_clock(Instant::now) {
+                    metrics.write(self.metrics());
                     report(&decision);
                 } else {
                     std::hint::spin_loop();
                 }
             }
+            metrics.write(self.metrics());
         })
+    }
+
+    fn metrics(&self) -> RobotMetrics {
+        RobotMetrics {
+            binance_skipped_publications: self.binance.skipped_publications(),
+            aster_skipped_publications: self.aster.skipped_publications(),
+        }
     }
 
     #[cfg(test)]

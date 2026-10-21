@@ -97,3 +97,5 @@ async fn feeds_keep_books_recovery_and_shutdown_independent() {
     assert_eq!(b.stats.output_buffer().connection_epoch, 1);
     b.finish().await;
 }
+
+mod service_tests;

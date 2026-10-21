@@ -1,5 +1,5 @@
 use crate::{
-    book::{BookError, BookPublisher, StoreError},
+    book::{BookError, BookPublisher},
     config,
     md::ProtocolError,
     metrics::FeedMetrics,
@@ -28,7 +28,7 @@ pub enum AdapterError {
     #[error(transparent)]
     Book(#[from] BookError),
     #[error(transparent)]
-    Publication(#[from] StoreError),
+    Publication(BookError),
     #[error("{0} timeout")]
     Timeout(&'static str),
     #[error("WebSocket disconnected")]

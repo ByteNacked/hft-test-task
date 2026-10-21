@@ -502,6 +502,7 @@ async fn old_parse_worker_is_retained_joined_and_its_snapshot_is_discarded() {
         next_snapshot: Instant::now(),
         sync_deadline: Instant::now(),
         live_since: None,
+        online: false,
     };
     runner.begin_sync(Duration::ZERO).unwrap();
     let (release, wait) = std::sync::mpsc::channel();

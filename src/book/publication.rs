@@ -1,10 +1,9 @@
 //! SPSC latest-state publication. Only a validated writer can populate a view.
 use crate::{
-    book::{Coverage, Level, OrderBook},
+    book::{BookError, Coverage, Level, OrderBook},
     config::{BOOK_LEVELS, ROBOT_LEVELS},
 };
 use std::time::Instant;
-use thiserror::Error;
 use triple_buffer::{Input, Output, TripleBuffer};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -85,16 +84,6 @@ impl Clone for BookView {
         cloned
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum StoreError {
-    #[error("publication capacity exceeded or invalid")]
-    Capacity,
-    #[error("Online requires a covered book and an applied diff")]
-    NotReady,
-    #[error("publication sequence overflow")]
-    SequenceOverflow,
-}
-
 pub struct BookPublisher {
     input: Input<BookView>,
     sequence: u64,
@@ -102,10 +91,11 @@ pub struct BookPublisher {
 }
 pub struct BookReader {
     output: Output<BookView>,
+    skipped_publications: u64,
 }
-pub fn channel(capacity: usize) -> Result<(BookPublisher, BookReader), StoreError> {
+pub fn channel(capacity: usize) -> Result<(BookPublisher, BookReader), BookError> {
     if !(ROBOT_LEVELS..=BOOK_LEVELS).contains(&capacity) {
-        return Err(StoreError::Capacity);
+        return Err(BookError::Capacity);
     }
     let (input, output) = TripleBuffer::new(&BookView::empty(capacity)).split();
     Ok((
@@ -114,15 +104,18 @@ pub fn channel(capacity: usize) -> Result<(BookPublisher, BookReader), StoreErro
             sequence: 0,
             capacity,
         },
-        BookReader { output },
+        BookReader {
+            output,
+            skipped_publications: 0,
+        },
     ))
 }
 impl BookPublisher {
     /// Copies the complete state, including status-only changes; timestamps come from
     /// the last committed diff, never from publication time. No allocations or awaits.
-    pub fn publish(&mut self, book: &OrderBook, status: BookStatus) -> Result<u64, StoreError> {
+    pub fn publish(&mut self, book: &OrderBook, status: BookStatus) -> Result<u64, BookError> {
         if book.bids().len() > self.capacity || book.asks().len() > self.capacity {
-            return Err(StoreError::Capacity);
+            return Err(BookError::Capacity);
         }
         if status == BookStatus::Online
             && (book.event_time().is_none()
@@ -130,12 +123,12 @@ impl BookPublisher {
                     .coverage()
                     .is_some_and(|c| c.is_sufficient(book.bids(), book.asks())))
         {
-            return Err(StoreError::NotReady);
+            return Err(BookError::NotReady);
         }
         let sequence = self
             .sequence
             .checked_add(1)
-            .ok_or(StoreError::SequenceOverflow)?;
+            .ok_or(BookError::SequenceOverflow)?;
         let slot = self.input.input_buffer_mut();
         slot.bids.clear();
         slot.asks.clear();
@@ -154,7 +147,20 @@ impl BookPublisher {
 }
 impl BookReader {
     pub fn update(&mut self) -> bool {
-        self.output.update()
+        let previous = self.view().sequence();
+        let changed = self.output.update();
+        if changed {
+            self.skipped_publications = self.skipped_publications.saturating_add(
+                self.view()
+                    .sequence()
+                    .saturating_sub(previous)
+                    .saturating_sub(1),
+            );
+        }
+        changed
+    }
+    pub fn skipped_publications(&self) -> u64 {
+        self.skipped_publications
     }
     /// Stable until the next explicit update; this call never implicitly consumes a slot.
     pub fn view(&self) -> &BookView {
