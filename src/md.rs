@@ -7,7 +7,7 @@ use crate::{
     config,
     numeric::{InstrumentRules, Price, Qty},
 };
-pub use adapter::{AdapterError, MDAdapter, spawn_adapter};
+pub use adapter::{AdapterError, MDAdapter};
 pub(crate) use adapter::{Backoff, get_body, shutdown_requested};
 use serde::Deserialize;
 use std::time::Instant;

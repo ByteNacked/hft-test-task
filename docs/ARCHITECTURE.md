@@ -15,7 +15,7 @@ flowchart LR
     R -. логи .-> L
 ```
 
-По OS-потоку с Tokio current-thread runtime на адаптер, отдельный синхронный поток робота и main с supervision. Дополнительно — writer логов и не более одного blocking worker разбора snapshot на адаптер.
+Один Tokio multi-thread runtime с двумя worker-потоками: адаптеры запускаются отдельными `tokio::spawn`, supervision работает в том же runtime. Робот с busy loop и writer логов — отдельные OS-потоки. Разбор snapshot использует общий blocking pool (не более двух потоков); каждый адаптер допускает не более одной задачи разбора одновременно.
 
 `MDAdapter` задаёт endpoints, декодирование и запуск. `binance`/`aster` содержат схемы своих площадок; `md::feed` — общий сетевой цикл. Один `select!` обслуживает WS, HTTP, результат разбора snapshot, таймеры и shutdown. Replay ограничен 32 сообщениями за итерацию. Старый parse worker дожидаются, результат другой `sync_epoch` отбрасывают.
 
@@ -43,7 +43,7 @@ Triple buffer передаёт последнюю книгу без очеред
 - `numeric`, `book` — числа, хранение и публикация.
 - `robot` — расчёт и polling; `logging` — формат и вывод.
 
-Supervision проверяет завершение потоков каждые 10 мс; это не период реакции робота. Ошибка/panic/неожиданный выход worker останавливает остальных. Stop робота — `AtomicBool` с Relaxed (данных не передаёт), stop фидов — `watch`. Main делает join только завершившихся потоков; адаптеры перед выходом публикуют Offline и дожидаются parse worker. `service::run` нужно дождаться до конца cleanup.
+Supervision проверяет завершение задач фидов и потока робота каждые 10 мс; это не период реакции робота. Ошибка/panic/неожиданный выход worker останавливает остальных. Stop робота — `AtomicBool` с Relaxed (данных не передаёт), stop фидов — `watch`. Supervision ожидает результаты завершённых Tokio tasks и делает join завершившегося потока робота; адаптеры перед выходом публикуют Offline и дожидаются parse worker. `service::run` нужно дождаться до конца cleanup.
 
 ## Логи
 

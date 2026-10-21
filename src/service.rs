@@ -1,8 +1,8 @@
-//! Main-thread supervision. Only finished OS threads are joined here.
+//! Supervise both adapter tasks on the shared runtime and the robot OS thread.
 use crate::{
     book,
     config::{self, RobotConfig},
-    md::{self, AdapterError, MDAdapter},
+    md::{AdapterError, MDAdapter},
     robot::{Decision, Robot},
 };
 use std::{
@@ -33,24 +33,26 @@ pub enum ServiceError {
 
 #[derive(Default)]
 struct Workers {
-    feeds: [Option<JoinHandle<Result<(), AdapterError>>>; 2],
+    feeds: [Option<tokio::task::JoinHandle<Result<(), AdapterError>>>; 2],
     robot: Option<JoinHandle<()>>,
 }
 impl Workers {
     fn empty(&self) -> bool {
         self.robot.is_none() && self.feeds.iter().all(Option::is_none)
     }
-    fn reap(&mut self, stopping: bool) -> Option<ServiceError> {
+    async fn reap(&mut self, stopping: bool) -> Option<ServiceError> {
         let mut first = None;
         for (name, slot) in ["binance", "aster"].into_iter().zip(&mut self.feeds) {
-            if slot.as_ref().is_some_and(JoinHandle::is_finished)
+            if slot
+                .as_ref()
+                .is_some_and(tokio::task::JoinHandle::is_finished)
                 && let Some(handle) = slot.take()
             {
-                let error = match handle.join() {
+                let error = match handle.await {
                     Ok(Ok(())) if stopping => None,
                     Ok(Ok(())) => Some("unexpected worker exit".to_owned()),
                     Ok(Err(error)) => Some(error.to_string()),
-                    Err(panic) => Some(panic_message(panic)),
+                    Err(error) => Some(error.to_string()),
                 };
                 record_error(&mut first, name, error);
             }
@@ -100,30 +102,24 @@ pub async fn run(
     let (aw, ar) = book::channel(config::BOOK_LEVELS, &ASTER_OFFLINE_EPOCH)?;
     let (stop_feeds, shutdown_feeds) = watch::channel(false);
     let stop_robot = Arc::new(AtomicBool::new(false));
-    let mut workers = Workers::default();
-    // Preserve ownership of every started worker if a later thread cannot be spawned.
-    let startup = (|| -> Result<(), ServiceError> {
-        workers.robot = Some(Robot::new(br, ar, robot_config).spawn(stop_robot.clone(), report)?);
-        workers.feeds[0] = Some(md::spawn_adapter(
-            "binance",
-            binance,
-            bw,
-            shutdown_feeds.clone(),
-        )?);
-        workers.feeds[1] = Some(md::spawn_adapter("aster", aster, aw, shutdown_feeds)?);
-        Ok(())
-    })();
-    let mut failure = startup.err();
-    let mut stopping = failure.is_some();
-    if stopping {
-        stop_robot.store(true, Ordering::Relaxed);
-        stop_feeds.send_replace(true);
-    }
+    // Spawn the only fallible OS thread first, before starting adapter tasks.
+    let robot = Robot::new(br, ar, robot_config).spawn(stop_robot.clone(), report)?;
+    let mut workers = Workers {
+        feeds: [
+            Some(tokio::spawn(Box::pin(
+                binance.run(bw, shutdown_feeds.clone()),
+            ))),
+            Some(tokio::spawn(Box::pin(aster.run(aw, shutdown_feeds)))),
+        ],
+        robot: Some(robot),
+    };
+    let mut failure = None;
+    let mut stopping = false;
     let mut checks = interval(config::SUPERVISION_INTERVAL);
     checks.set_missed_tick_behavior(MissedTickBehavior::Skip);
     tokio::pin!(shutdown);
     loop {
-        if let Some(error) = workers.reap(stopping) {
+        if let Some(error) = workers.reap(stopping).await {
             failure.get_or_insert(error);
         }
         if failure.is_some() && !stopping {
@@ -138,7 +134,7 @@ pub async fn run(
         tokio::select! {
             result=&mut shutdown, if !stopping => {
                 // Detect workers that already exited before cancellation was requested.
-                if let Some(error)=workers.reap(false) {failure.get_or_insert(error);}
+                if let Some(error)=workers.reap(false).await {failure.get_or_insert(error);}
                 if let Err(error)=result {failure.get_or_insert(error.into());}
                 stopping=true;stop_robot.store(true,Ordering::Relaxed);stop_feeds.send_replace(true);
                 tracing::debug!("shutdown requested");

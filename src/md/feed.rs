@@ -69,6 +69,7 @@ pub(crate) async fn run<P: MDAdapter>(
     books: BookPublisher,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), AdapterError> {
+    tracing::debug!(venue=P::NAME, thread_id=?std::thread::current().id(), "feed task started");
     let client = reqwest::Client::builder()
         .timeout(settings.http_timeout)
         .redirect(reqwest::redirect::Policy::none())

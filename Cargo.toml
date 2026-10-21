@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 fastrand = "2"
 httpdate = "1"
-tokio = { version = "1", features = ["rt", "net", "time", "macros", "signal", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "signal", "sync"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", features = ["sink"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

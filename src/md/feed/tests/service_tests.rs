@@ -200,7 +200,7 @@ fn healthy(venue: Venue) -> Venue {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn any_feed_fault_holds_entire_instrument_until_new_snapshot_replay() {
     for venue in [Venue::Binance, Venue::Aster] {
         for fault in [
@@ -259,7 +259,7 @@ async fn assert_hold_while_pending(rig: &mut Rig, venue: Venue) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_snapshot_overflow_and_late_http_keep_robot_on_hold() {
     let mut rig = Rig::new(1).await;
     let b = rig.bm.request("/snapshot").await;
@@ -296,7 +296,7 @@ async fn slow_snapshot_overflow_and_late_http_keep_robot_on_hold() {
     rig.finish().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn silent_feed_with_pings_and_duplicates_holds_then_goes_offline() {
     let mut rig = Rig::with_timing(
         config::SYNC_MESSAGES,
@@ -336,7 +336,7 @@ async fn silent_feed_with_pings_and_duplicates_holds_then_goes_offline() {
     rig.finish().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_timeout_recovers_while_other_feed_stays_live() {
     let mut rig = Rig::with_timing(
         config::SYNC_MESSAGES,

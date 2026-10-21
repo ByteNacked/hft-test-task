@@ -6,7 +6,6 @@ use crate::{
 };
 use std::{
     future::Future,
-    thread,
     time::{Duration, SystemTime},
 };
 use tokio::sync::watch;
@@ -40,8 +39,6 @@ pub enum AdapterError {
     EpochOverflow,
     #[error("snapshot worker failed: {0}")]
     Worker(#[from] tokio::task::JoinError),
-    #[error("runtime initialization: {0}")]
-    Runtime(#[from] std::io::Error),
 }
 impl AdapterError {
     pub(crate) fn retry_after(&self) -> Option<Duration> {
@@ -56,7 +53,7 @@ impl AdapterError {
     pub(crate) fn fatal(&self) -> bool {
         matches!(
             self,
-            Self::Publication(_) | Self::EpochOverflow | Self::Worker(_) | Self::Runtime(_)
+            Self::Publication(_) | Self::EpochOverflow | Self::Worker(_)
         )
     }
 }
@@ -78,23 +75,6 @@ pub trait MDAdapter: Send + Sized + 'static {
         books: BookPublisher,
         shutdown: watch::Receiver<bool>,
     ) -> impl Future<Output = Result<(), AdapterError>> + Send;
-}
-
-/// Own the adapter and its current-thread runtime on a dedicated OS thread.
-/// The adapter drains its blocking parse worker before returning, including on shutdown.
-pub fn spawn_adapter<A: MDAdapter>(
-    name: &str,
-    adapter: A,
-    books: BookPublisher,
-    shutdown: watch::Receiver<bool>,
-) -> std::io::Result<thread::JoinHandle<Result<(), AdapterError>>> {
-    thread::Builder::new().name(name.to_owned()).spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .max_blocking_threads(1)
-            .build()?;
-        runtime.block_on(Box::pin(adapter.run(books, shutdown)))
-    })
 }
 
 /// watch::changed is cancellation-safe. Dropping the last sender also stops the worker.

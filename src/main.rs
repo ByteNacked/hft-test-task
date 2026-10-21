@@ -25,7 +25,9 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         Ok(config) => {
-            let result = tokio::runtime::Builder::new_current_thread()
+            let result = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .max_blocking_threads(2)
                 .enable_all()
                 .build()
                 .map_err(service::ServiceError::from)

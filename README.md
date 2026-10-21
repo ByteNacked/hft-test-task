@@ -83,6 +83,6 @@ Snapshot конечен: достоверны bids не ниже его нижн
 
 Фон только в терминале. `tracing-appender` пишет в отдельном потоке, очередь ограничена 4096 записями; при переполнении записи отбрасываются. Форматирование выполняется в вызывающем потоке. Начальные Offline/Hold не считаются сменой состояния.
 
-Основные библиотеки: `tokio` (current-thread runtime на каждый фид и main), `tokio-tungstenite` + `rustls` (WS), `reqwest` (REST), `serde`/`serde_json` (типизированный разбор), `arrayvec` (ограниченные уровни), `triple_buffer` (публикация последней книги), `fixnum` (числа), `clap` (CLI), `tracing`/`tracing-subscriber`/`tracing-appender` (логи), `thiserror` (ошибки), `fastrand`/`httpdate` (backoff). `proptest` используется только для сверки merge с `BTreeMap`. Точные версии — `Cargo.lock`.
+Основные библиотеки: `tokio` (один multi-thread runtime, два workers; по task на фид), `tokio-tungstenite` + `rustls` (WS), `reqwest` (REST), `serde`/`serde_json` (типизированный разбор), `arrayvec` (ограниченные уровни), `triple_buffer` (публикация последней книги), `fixnum` (числа), `clap` (CLI), `tracing`/`tracing-subscriber`/`tracing-appender` (логи), `thiserror` (ошибки), `fastrand`/`httpdate` (backoff). `proptest` используется только для сверки merge с `BTreeMap`. Точные версии — `Cargo.lock`.
 
 [Архитектура](docs/ARCHITECTURE.md) · [Проверки](docs/VALIDATION.md) · [План реализации](docs/IMPLEMENTATION_PLAN.md).
