@@ -17,6 +17,7 @@ type DecodeDiff = fn(
     InstrumentRules,
     &mut DepthDiff,
     &mut DiffScratch,
+    crate::book::PriceWindow,
 ) -> Result<(), ProtocolError>;
 
 struct Protocol {
@@ -69,6 +70,7 @@ fn fixtures_flow_through_book_and_robot() {
             rules,
             &mut diff,
             &mut scratch,
+            crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
         )
         .unwrap();
         assert_eq!(diff.time.exchange_time(), 1_700_000_000_002);
@@ -108,7 +110,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                 receive,
                 rules,
                 &mut diff,
-                &mut scratch
+                &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap()
             )
             .is_err()
         );
@@ -139,7 +142,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                     receive,
                     rules,
                     &mut diff,
-                    &mut scratch
+                    &mut scratch,
+                    crate::book::PriceWindow::new(rules.tick_size()).unwrap()
                 )
                 .is_err(),
                 "field={field}"
@@ -151,6 +155,7 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                 rules,
                 &mut diff,
                 &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
             )
             .unwrap();
         }
@@ -163,7 +168,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                     receive,
                     rules,
                     &mut diff,
-                    &mut scratch
+                    &mut scratch,
+                    crate::book::PriceWindow::new(rules.tick_size()).unwrap()
                 )
                 .is_err(),
                 "missing={field}"
@@ -177,7 +183,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                 receive,
                 rules,
                 &mut diff,
-                &mut scratch
+                &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap()
             )
             .is_err()
         );
@@ -187,7 +194,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                 receive,
                 rules,
                 &mut diff,
-                &mut scratch
+                &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap()
             ),
             Err(ProtocolError::BodyTooLarge)
         ));
@@ -201,7 +209,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                 receive,
                 rules,
                 &mut diff,
-                &mut scratch
+                &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap()
             )
             .is_err()
         );
@@ -212,12 +221,23 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
             rules,
             &mut diff,
             &mut scratch,
+            crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
         )
         .unwrap();
         assert_eq!(diff.bids.len(), config::DIFF_LEVELS);
         let mut trailing = protocol.diff_fixture.to_vec();
         trailing.extend_from_slice(b"{}");
-        assert!((protocol.diff)(&trailing, receive, rules, &mut diff, &mut scratch).is_err());
+        assert!(
+            (protocol.diff)(
+                &trailing,
+                receive,
+                rules,
+                &mut diff,
+                &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap()
+            )
+            .is_err()
+        );
         for field in ["u", "b", "data"] {
             let value = if field == "data" {
                 &base[field]
@@ -234,7 +254,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
                     receive,
                     rules,
                     &mut diff,
-                    &mut scratch
+                    &mut scratch,
+                    crate::book::PriceWindow::new(rules.tick_size()).unwrap()
                 )
                 .is_err()
             );
@@ -271,7 +292,8 @@ fn unordered_diffs_detect_retransmissions_and_conflicts_without_refreshing_book(
                     now,
                     rules,
                     &mut incoming,
-                    &mut scratch
+                    &mut scratch,
+                    crate::book::PriceWindow::new(rules.tick_size()).unwrap()
                 ),
                 Err(ProtocolError::Book(book::BookError::DuplicatePrice))
             ));
@@ -282,6 +304,7 @@ fn unordered_diffs_detect_retransmissions_and_conflicts_without_refreshing_book(
                 rules,
                 &mut incoming,
                 &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
             )
             .unwrap();
         }
@@ -301,6 +324,7 @@ fn unordered_diffs_detect_retransmissions_and_conflicts_without_refreshing_book(
                 rules,
                 &mut incoming,
                 &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
             )
             .unwrap();
             if conflict {
@@ -336,6 +360,7 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
             rules,
             &mut incoming,
             &mut scratch,
+            crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
         )
         .unwrap();
         assert_eq!(synced.apply(&mut incoming).unwrap(), Applied::Update);
@@ -350,7 +375,8 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
                     now,
                     rules,
                     &mut incoming,
-                    &mut scratch
+                    &mut scratch,
+                    crate::book::PriceWindow::new(rules.tick_size()).unwrap()
                 )
                 .is_err()
             );
@@ -361,6 +387,7 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
                 rules,
                 &mut incoming,
                 &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
             )
             .unwrap();
             assert_eq!(synced.apply(&mut incoming).unwrap(), Applied::Duplicate);
@@ -377,6 +404,7 @@ fn reused_diff_buffers_preserve_last_update_on_errors_and_clear_old_levels() {
                 rules,
                 &mut incoming,
                 &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
             )
             .unwrap();
             assert_eq!(synced.apply(&mut incoming).unwrap(), Applied::Update);
@@ -487,6 +515,7 @@ fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
                 "0",
                 BookError::PriceRange {
                     price: "100000".parse().unwrap(),
+                    min_price: rules.tick_size(),
                     max_price: max,
                 },
             ),
@@ -494,7 +523,7 @@ fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
             let mut bad: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
             bad["data"]["a"] = json!([[price, quantity]]);
             assert!(
-                matches!((protocol.diff)(&serde_json::to_vec(&bad).unwrap(), now, rules, &mut incoming, &mut scratch),
+                matches!((protocol.diff)(&serde_json::to_vec(&bad).unwrap(), now, rules, &mut incoming, &mut scratch, crate::book::PriceWindow::new(rules.tick_size()).unwrap()),
                 Err(ProtocolError::Book(actual)) if actual == error)
             );
             (protocol.diff)(
@@ -503,6 +532,7 @@ fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
                 rules,
                 &mut incoming,
                 &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
             )
             .unwrap();
         }
@@ -515,6 +545,7 @@ fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
             rules,
             &mut incoming,
             &mut scratch,
+            crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
         )
         .unwrap();
         assert_eq!(incoming.asks[0].index(), config::BOOK_PRICE_SLOTS - 1);
@@ -525,7 +556,8 @@ fn indexed_diff_rejects_bad_steps_and_range_and_reuses_workspace() {
                 now,
                 rules,
                 &mut incoming,
-                &mut scratch
+                &mut scratch,
+                crate::book::PriceWindow::new(rules.tick_size()).unwrap()
             ),
             Err(ProtocolError::Book(BookError::DuplicatePrice))
         ));

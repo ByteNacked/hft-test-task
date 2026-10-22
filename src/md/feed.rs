@@ -217,7 +217,7 @@ impl<P: MDAdapter> Runner<P> {
             AdapterError::Book(BookError::PriceRange { .. })
                 | AdapterError::Protocol(ProtocolError::Book(BookError::PriceRange { .. }))
         ) {
-            tracing::error!(venue=P::NAME, %error, "book price range exceeded; increase BOOK_PRICE_SLOTS and restart");
+            tracing::error!(venue=P::NAME, %error, "book price window exceeded; reload snapshot and recenter");
         } else {
             tracing::warn!(venue=P::NAME, %error, "market-data recovery");
         }
@@ -295,6 +295,7 @@ impl<P: MDAdapter> Runner<P> {
             self.rules,
             &mut self.incoming,
             &mut self.scratch,
+            self.synced.book.window(),
         )?;
         let final_id = self.incoming.final_id;
         match self.synced.apply(&mut self.incoming)? {

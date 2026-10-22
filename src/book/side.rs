@@ -1,8 +1,8 @@
 //! Fixed price slots and two bitmap levels; all storage is allocated at startup.
-use super::{IndexedLevel, Level};
+use super::{IndexedLevel, Level, PriceWindow};
 use crate::{
     config::{BOOK_PRICE_SLOTS, PUBLISHED_LEVELS},
-    numeric::{Price, Qty},
+    numeric::Qty,
 };
 use arrayvec::ArrayVec;
 
@@ -32,7 +32,7 @@ impl Side {
             top_dirty: false,
         }
     }
-    pub(super) fn levels(&self, tick: Price) -> impl Iterator<Item = Level> + '_ {
+    pub(super) fn levels(&self, window: PriceWindow) -> impl Iterator<Item = Level> + '_ {
         let descending = self.descending;
         let start = self.best_group.unwrap_or(0);
         let count = self.best_group.map_or(0, |best| {
@@ -49,8 +49,7 @@ impl Side {
                 bits(self.occupied[word], descending).map(move |bit| {
                     let index = word * 64 + bit;
                     Level {
-                        // Only checked positive prices set bits; constructor bounds this product.
-                        price: Price::from_raw(index as i64 * tick.raw()).unwrap(),
+                        price: window.price(index),
                         qty: self.quantities[index],
                     }
                 })
@@ -93,17 +92,18 @@ impl Side {
         }
         old
     }
-    pub(super) fn load(&mut self, levels: &[Level], tick: Price) {
+    pub(super) fn load(&mut self, levels: &[Level], window: PriceWindow) {
+        // Prices were checked against this window before loading either side.
         // Full reset is confined to snapshot recovery, never the diff hot path.
         self.quantities.fill(Qty::ZERO);
         self.occupied.fill(0);
         self.nonempty_words.fill(0);
         self.best_group = None;
         for level in levels {
-            self.set((level.price.raw() / tick.raw()) as usize, level.qty);
+            self.set(window.index(level.price).unwrap(), level.qty);
         }
         self.top_dirty = true;
-        self.refresh_top(tick);
+        self.refresh_top(window);
     }
     pub(super) fn apply(&mut self, levels: &[IndexedLevel]) {
         for level in levels {
@@ -119,15 +119,15 @@ impl Side {
                     });
         }
     }
-    pub(super) fn refresh_top(&mut self, tick: Price) {
+    pub(super) fn refresh_top(&mut self, window: PriceWindow) {
         if !self.top_dirty {
             return;
         }
-        self.top = self.levels(tick).take(PUBLISHED_LEVELS).collect();
+        self.top = self.levels(window).take(PUBLISHED_LEVELS).collect();
         self.worst_top_index = self
             .top
             .last()
-            .map_or(0, |level| (level.price.raw() / tick.raw()) as usize);
+            .map_or(0, |level| window.index(level.price).unwrap());
         self.top_dirty = false;
     }
 }

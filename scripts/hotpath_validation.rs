@@ -50,11 +50,14 @@ impl<P: MDAdapter> MDAdapter for BenchAdapter<P> {
         rules: InstrumentRules,
         out: &mut DepthDiff,
         #[cfg(feature = "bench-unsorted-diff")] scratch: &mut crate::md::DiffScratch,
+        #[cfg(feature = "bench-offset-book")] window: crate::book::PriceWindow,
     ) -> Result<(), ProtocolError> {
         P::decode_diff_into(
             body, received, rules, out,
             #[cfg(feature = "bench-unsorted-diff")]
             scratch,
+            #[cfg(feature = "bench-offset-book")]
+            window,
         )
     }
     #[cfg(feature = "bench-old-api")]
@@ -113,9 +116,17 @@ impl<P: MDAdapter> MDAdapter for BenchAdapter<P> {
                 let bid = level(3490 * SCALE - i as i64 * 10_000_000, SCALE);
                 let ask = level(3510 * SCALE + i as i64 * 10_000_000, SCALE);
                 #[cfg(feature = "bench-indexed-diff")]
-                let bid = crate::book::IndexedLevel::new(bid, rules)?;
+                let bid = crate::book::IndexedLevel::new(
+                    bid, rules,
+                    #[cfg(feature = "bench-offset-book")]
+                    runner.synced.book.window(),
+                )?;
                 #[cfg(feature = "bench-indexed-diff")]
-                let ask = crate::book::IndexedLevel::new(ask, rules)?;
+                let ask = crate::book::IndexedLevel::new(
+                    ask, rules,
+                    #[cfg(feature = "bench-offset-book")]
+                    runner.synced.book.window(),
+                )?;
                 extra.bids.push(bid);
                 extra.asks.push(ask);
             }

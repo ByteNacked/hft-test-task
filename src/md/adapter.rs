@@ -65,13 +65,15 @@ pub trait MDAdapter: Send + Sized + 'static {
     const SNAPSHOT_URL: &'static str;
     fn decode_metadata(body: &[u8]) -> Result<InstrumentRules, ProtocolError>;
     fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError>;
-    /// Reuses bounded output and scratch; preserves wire order. Never apply output on error.
+    /// Decode against the current snapshot window, reusing output and scratch.
+    /// Preserves wire order. Never apply output on error.
     fn decode_diff_into(
         body: &[u8],
         received: ReceiveTime,
         rules: InstrumentRules,
         out: &mut DepthDiff,
         scratch: &mut DiffScratch,
+        window: crate::book::PriceWindow,
     ) -> Result<(), ProtocolError>;
     fn run(
         self,

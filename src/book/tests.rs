@@ -94,10 +94,8 @@ fn snapshot_validation_and_new_epoch_clears_timestamps() {
         book.load_snapshot(&snapshot(100, SCALE, 4)),
         Err(BookError::CoverageLost)
     );
-    assert!(matches!(
-        book.load_snapshot(&snapshot(BOOK_PRICE_SLOTS as i64 - 3, SCALE, 6)),
-        Err(BookError::PriceRange { .. })
-    ));
+    book.load_snapshot(&snapshot(BOOK_PRICE_SLOTS as i64 - 3, SCALE, 6))
+        .unwrap();
     book.load_snapshot(&snapshot(100, SCALE, 6)).unwrap();
     book.apply_diff(&diff(now)).unwrap();
     book.load_snapshot(&snapshot(200, SCALE, 6)).unwrap();
@@ -143,7 +141,14 @@ fn sparse_bitmap_boundaries_and_snapshot_replacement() {
     let now = Instant::now();
     let tick = price(10);
     let instrument = InstrumentRules::new(tick, qty(1)).unwrap();
-    let indexed = |p, q| IndexedLevel::new(level(p, q), instrument).unwrap();
+    let indexed = |p, q| {
+        IndexedLevel::new(
+            level(p, q),
+            instrument,
+            super::PriceWindow::new(tick).unwrap(),
+        )
+        .unwrap()
+    };
     let mut book = OrderBook::new(tick).unwrap();
     let mut initial = snapshot(500_000, SCALE, 6);
     for l in initial.bids.iter_mut().chain(&mut initial.asks) {
@@ -180,6 +185,7 @@ fn sparse_bitmap_boundaries_and_snapshot_replacement() {
             max + tick.raw(),
             BookError::PriceRange {
                 price: price(max + tick.raw()),
+                min_price: tick,
                 max_price: price(max),
             },
         ),
@@ -188,7 +194,10 @@ fn sparse_bitmap_boundaries_and_snapshot_replacement() {
             BookError::Numeric(crate::numeric::NumericError::InvalidStep),
         ),
     ] {
-        assert_eq!(IndexedLevel::new(level(raw, 0), instrument), Err(error));
+        assert_eq!(
+            IndexedLevel::new(level(raw, 0), instrument, book.window()),
+            Err(error)
+        );
     }
     change.asks.clear();
     change.asks.push(indexed(max, 0));
@@ -227,6 +236,88 @@ fn sparse_bitmap_boundaries_and_snapshot_replacement() {
     assert_eq!(book.bids().collect::<Vec<_>>(), initial.bids.as_slice());
     assert_eq!(book.asks().collect::<Vec<_>>(), initial.asks.as_slice());
     assert_eq!(book.event_time(), None);
+}
+
+#[test]
+fn shifted_window_preserves_prices_boundaries_and_resets_on_snapshot() {
+    let now = Instant::now();
+    let tick = price(10);
+    let instrument = InstrumentRules::new(tick, qty(1)).unwrap();
+    let mut book = OrderBook::new(tick).unwrap();
+    for mid_ticks in [3 * BOOK_PRICE_SLOTS as i64, 6 * BOOK_PRICE_SLOTS as i64] {
+        let mut initial = snapshot(mid_ticks, SCALE, 6);
+        for level in initial.bids.iter_mut().chain(&mut initial.asks) {
+            level.price = price(level.price.raw() * tick.raw());
+        }
+        book.load_snapshot(&initial).unwrap();
+        assert_eq!(book.bids().collect::<Vec<_>>(), initial.bids.as_slice());
+        assert_eq!(book.asks().collect::<Vec<_>>(), initial.asks.as_slice());
+        assert_eq!(book.event_time(), None);
+        let window = book.window();
+        let base = (mid_ticks - (BOOK_PRICE_SLOTS / 2) as i64) * tick.raw();
+        let max = base + (BOOK_PRICE_SLOTS - 1) as i64 * tick.raw();
+        let mut change = diff(now);
+        // Exercise slot zero and bitmap word/group boundaries away from absolute zero.
+        for offset in [0, 63, 64, 4095, 4096] {
+            let level =
+                IndexedLevel::new(level(base + offset * tick.raw(), SCALE), instrument, window)
+                    .unwrap();
+            assert_eq!(level.index(), offset as usize);
+            change.bids.push(level);
+        }
+        change
+            .asks
+            .push(IndexedLevel::new(level(max, SCALE), instrument, window).unwrap());
+        book.apply_diff(&change).unwrap();
+        assert_eq!(book.bids().last().unwrap(), level(base, SCALE));
+        assert_eq!(book.asks().last().unwrap(), level(max, SCALE));
+        let published = view(&book);
+        assert_eq!(published.view().bids, book.bids().collect::<Vec<_>>());
+        assert_eq!(published.view().asks, book.asks().collect::<Vec<_>>());
+        for raw in [base - tick.raw(), max + tick.raw()] {
+            // Even out-of-window deletions must request recovery, never wrap an index.
+            assert_eq!(
+                IndexedLevel::new(level(raw, 0), instrument, window),
+                Err(BookError::PriceRange {
+                    price: price(raw),
+                    min_price: price(base),
+                    max_price: price(max),
+                })
+            );
+        }
+        for level in change.bids.iter_mut().chain(&mut change.asks) {
+            level.qty = qty(0);
+        }
+        book.apply_diff(&change).unwrap();
+        assert_eq!(book.bids().collect::<Vec<_>>(), initial.bids.as_slice());
+        assert_eq!(book.asks().collect::<Vec<_>>(), initial.asks.as_slice());
+    }
+}
+
+#[test]
+fn window_clamps_at_numeric_bounds_without_rounding_or_overflow() {
+    let now = Instant::now();
+    let mut book = OrderBook::new(price(1)).unwrap();
+    for mid in [10, i64::MAX - 10] {
+        let initial = snapshot(mid, SCALE, 6);
+        book.load_snapshot(&initial).unwrap();
+        let extreme = if mid == 10 { 1 } else { i64::MAX };
+        let mut change = diff(now);
+        let side = if mid == 10 {
+            &mut change.bids
+        } else {
+            &mut change.asks
+        };
+        side.push(IndexedLevel::new(level(extreme, SCALE), rules(), book.window()).unwrap());
+        book.apply_diff(&change).unwrap();
+        assert_eq!(book.bids().next(), initial.bids.first().copied());
+        assert_eq!(book.asks().next(), initial.asks.first().copied());
+        if mid == 10 {
+            assert_eq!(book.bids().last().unwrap().price, price(extreme));
+        } else {
+            assert_eq!(book.asks().last().unwrap().price, price(extreme));
+        }
+    }
 }
 
 #[test]

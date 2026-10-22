@@ -42,7 +42,7 @@ def main():
     with (checkout / "src/md/feed.rs").open("a") as stream:
         stream.write("\n#[cfg(test)]\nmod validation;\n")
     with (checkout / "Cargo.toml").open("a") as stream:
-        stream.write('\n[features]\nbench-old-api = []\nbench-price-slots = []\nbench-indexed-diff = []\nbench-deferred-logs = []\nbench-shared-logs = []\nbench-unsorted-diff = []\n')
+        stream.write('\n[features]\nbench-old-api = []\nbench-price-slots = []\nbench-indexed-diff = []\nbench-deferred-logs = []\nbench-shared-logs = []\nbench-unsorted-diff = []\nbench-offset-book = []\n')
     # Force rebuilding this copy when sharing Cargo's target directory across revisions.
     (checkout / "src/lib.rs").touch()
     command = ["cargo", "test", "--offline", "--locked", "--release", "--manifest-path", str(checkout / "Cargo.toml"), "--lib"]
@@ -52,6 +52,8 @@ def main():
         command.extend(["--features", "bench-price-slots"])
     if "pub struct DiffScratch" in (checkout / "src/md.rs").read_text():
         command.extend(["--features", "bench-unsorted-diff"])
+    if "pub struct PriceWindow" in (checkout / "src/book.rs").read_text():
+        command.extend(["--features", "bench-offset-book"])
     if "pub struct IndexedLevel" in (checkout / "src/book.rs").read_text():
         command.extend(["--features", "bench-indexed-diff"])
     if (checkout / "src/logging/deferred.rs").exists():

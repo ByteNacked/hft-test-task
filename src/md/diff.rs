@@ -2,7 +2,7 @@
 //! RawValue would allocate serde_json scratch for nested arrays on every message.
 use super::{DepthDiff, DiffScratch, EventTime, ProtocolError, ReceiveTime};
 use crate::{
-    book::{BookError, DiffSide, IndexedLevel, Level},
+    book::{BookError, DiffSide, IndexedLevel, Level, PriceWindow},
     config,
     numeric::InstrumentRules,
 };
@@ -68,6 +68,7 @@ struct DataSeed<'a, const BINANCE: bool>(
     &'a mut DepthDiff,
     InstrumentRules,
     &'a mut Option<BookError>,
+    PriceWindow,
 );
 impl<'de, const BINANCE: bool> DeserializeSeed<'de> for DataSeed<'_, BINANCE> {
     type Value = Header<'de>;
@@ -102,14 +103,14 @@ impl<'de, const BINANCE: bool> Visitor<'de> for DataSeed<'_, BINANCE> {
                     if bids {
                         return Err(A::Error::duplicate_field("b"));
                     }
-                    map.next_value_seed(DiffLevelsSeed(&mut self.0.bids, self.1, self.2))?;
+                    map.next_value_seed(DiffLevelsSeed(&mut self.0.bids, self.1, self.2, self.3))?;
                     bids = true;
                 }
                 Field::Asks => {
                     if asks {
                         return Err(A::Error::duplicate_field("a"));
                     }
-                    map.next_value_seed(DiffLevelsSeed(&mut self.0.asks, self.1, self.2))?;
+                    map.next_value_seed(DiffLevelsSeed(&mut self.0.asks, self.1, self.2, self.3))?;
                     asks = true;
                 }
                 _ => {
@@ -141,6 +142,7 @@ struct WrapperSeed<'a, const BINANCE: bool>(
     &'a mut DepthDiff,
     InstrumentRules,
     &'a mut Option<BookError>,
+    PriceWindow,
 );
 impl<'de, const BINANCE: bool> DeserializeSeed<'de> for WrapperSeed<'_, BINANCE> {
     type Value = (&'de str, Header<'de>);
@@ -162,7 +164,9 @@ impl<'de, const BINANCE: bool> Visitor<'de> for WrapperSeed<'_, BINANCE> {
                     if data.is_some() {
                         return Err(A::Error::duplicate_field("data"));
                     }
-                    data = Some(map.next_value_seed(DataSeed::<BINANCE>(self.0, self.1, self.2))?);
+                    data = Some(
+                        map.next_value_seed(DataSeed::<BINANCE>(self.0, self.1, self.2, self.3))?,
+                    );
                 }
                 _ => {
                     map.next_value::<IgnoredAny>()?;
@@ -182,13 +186,14 @@ pub(crate) fn decode_into<const BINANCE: bool>(
     rules: InstrumentRules,
     out: &mut DepthDiff,
     scratch: &mut DiffScratch,
+    window: PriceWindow,
 ) -> Result<(), ProtocolError> {
     out.bids.clear();
     out.asks.clear();
     super::check_body(body, config::MESSAGE_BYTES)?;
     let mut decoder = serde_json::Deserializer::from_slice(body);
     let mut level_error = None;
-    let (stream, header) = WrapperSeed::<BINANCE>(out, rules, &mut level_error)
+    let (stream, header) = WrapperSeed::<BINANCE>(out, rules, &mut level_error, window)
         .deserialize(&mut decoder)
         .map_err(|error| {
             level_error.map_or_else(|| ProtocolError::Json(error), ProtocolError::Book)
@@ -208,7 +213,12 @@ pub(crate) fn decode_into<const BINANCE: bool>(
 }
 
 // Preserve domain errors across Serde so range failures still produce ERROR + Offline.
-struct DiffLevelsSeed<'a>(&'a mut DiffSide, InstrumentRules, &'a mut Option<BookError>);
+struct DiffLevelsSeed<'a>(
+    &'a mut DiffSide,
+    InstrumentRules,
+    &'a mut Option<BookError>,
+    PriceWindow,
+);
 impl<'de> DeserializeSeed<'de> for DiffLevelsSeed<'_> {
     type Value = ();
     fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
@@ -222,7 +232,7 @@ impl<'de> Visitor<'de> for DiffLevelsSeed<'_> {
     }
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
         while let Some(level) = seq.next_element::<Level>()? {
-            let indexed = IndexedLevel::new(level, self.1).map_err(|error| {
+            let indexed = IndexedLevel::new(level, self.1, self.3).map_err(|error| {
                 *self.2 = Some(error);
                 A::Error::custom(error)
             })?;

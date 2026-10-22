@@ -68,8 +68,9 @@ impl MDAdapter for AsterAdapter {
         rules: InstrumentRules,
         out: &mut DepthDiff,
         scratch: &mut DiffScratch,
+        window: crate::book::PriceWindow,
     ) -> Result<(), ProtocolError> {
-        md::decode_diff_into::<false>(body, receive, rules, out, scratch)
+        md::decode_diff_into::<false>(body, receive, rules, out, scratch, window)
     }
     fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError> {
         md::check_body(body, config::MESSAGE_BYTES)?;

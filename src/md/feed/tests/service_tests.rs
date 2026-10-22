@@ -267,6 +267,83 @@ async fn assert_hold_while_pending(rig: &mut Rig, venue: Venue) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn price_window_recovery_replays_buffered_updates_at_new_base() {
+    use crate::numeric::{Price, SCALE};
+    use serde_json::{Value, json};
+    let mut rig = Rig::new(config::SYNC_MESSAGES).await;
+    rig.ready().await;
+    let shift = |levels: &mut Value| {
+        for level in levels.as_array_mut().unwrap() {
+            let price: Price = level[0].as_str().unwrap().parse().unwrap();
+            level[0] = json!(
+                Price::from_raw(price.raw() + 100_000 * SCALE)
+                    .unwrap()
+                    .to_string()
+            );
+        }
+    };
+    for venue in [Venue::Binance, Venue::Aster] {
+        let mut update: Value = serde_json::from_str(
+            event(venue, 103, 104, 102, "0.3")
+                .into_text()
+                .unwrap()
+                .as_str(),
+        )
+        .unwrap();
+        for side in ["b", "a"] {
+            shift(&mut update["data"][side]);
+        }
+        rig.socket(venue)
+            .send(Message::Text(update.to_string().into()))
+            .await
+            .unwrap();
+        rig.decision(|d| {
+            failed_status(d, venue) == BookStatus::Offline
+                && failed_status(d, healthy(venue)) == BookStatus::Online
+        })
+        .await;
+
+        let fixture = match venue {
+            Venue::Binance => BINANCE_SNAPSHOT,
+            Venue::Aster => ASTER_SNAPSHOT,
+        };
+        let mut snapshot: Value = serde_json::from_slice(fixture).unwrap();
+        snapshot["lastUpdateId"] = json!(104);
+        for side in ["bids", "asks"] {
+            shift(&mut snapshot[side]);
+        }
+        // Queue a valid bridge while the new snapshot is still outstanding.
+        update["data"]["U"] = json!(104);
+        update["data"]["u"] = json!(105);
+        update["data"]["pu"] = json!(103);
+        rig.socket(venue)
+            .send(Message::Text(update.to_string().into()))
+            .await
+            .unwrap();
+        let reply = match venue {
+            Venue::Binance => rig.bm.request("/snapshot").await,
+            Venue::Aster => rig.am.request("/snapshot").await,
+        };
+        assert_hold_while_pending(&mut rig, venue).await;
+        reply
+            .send(Response::ok(&serde_json::to_vec(&snapshot).unwrap()))
+            .unwrap();
+        let online = rig
+            .decision(|d| {
+                d.binance.status == BookStatus::Online && d.aster.status == BookStatus::Online
+            })
+            .await;
+        match venue {
+            Venue::Binance => {
+                assert_eq!(online.binance.mid2_raw, Some(207_000 * i128::from(SCALE)))
+            }
+            Venue::Aster => assert_eq!(online.aster.mid2_raw, Some(206_992 * i128::from(SCALE))),
+        }
+    }
+    rig.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_snapshot_overflow_and_late_http_keep_robot_on_hold() {
     let mut rig = Rig::new(1).await;
     let b = rig.bm.request("/snapshot").await;
