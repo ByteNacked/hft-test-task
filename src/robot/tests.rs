@@ -24,6 +24,34 @@ fn directions_threshold_equality_and_exact_explanation() {
         assert_eq!(d.binance.mid2_raw, Some(40_000));
         assert_eq!(d.binance.bid_qty_raw, Some(i128::from(SCALE)));
     }
+
+    // Half-tick midpoint: truncating it to Price would incorrectly produce Hold.
+    let mut snapshot = snapshot(20_000, SCALE, 6);
+    for ask in &mut snapshot.asks {
+        ask.price = price(ask.price.raw() + 1);
+    }
+    let mut binance = book(now, 20_000, SCALE);
+    binance.load_snapshot(&snapshot).unwrap();
+    binance.apply_diff(&diff(now)).unwrap();
+    let b = view(&binance);
+    let a = view(&book(now, 19_996, SCALE));
+    let d = evaluate(b.view(), a.view(), &Default::default(), now);
+    assert_eq!(d.binance.mid2_raw, Some(40_001));
+    assert_eq!(d.bias, Bias::LongBiasAster);
+    assert!(d.binance.to_string().contains("mid=0.0000200005"));
+
+    // Valid prices at opposite domain extremes must not overflow intermediate sums/products.
+    for (binance, aster, bias) in [
+        (7, i64::MAX - 10, Bias::ShortBiasAster),
+        (i64::MAX - 10, 7, Bias::LongBiasAster),
+    ] {
+        let b = view(&book(now, binance, i64::MAX));
+        let a = view(&book(now, aster, i64::MAX));
+        assert_eq!(
+            evaluate(b.view(), a.view(), &Default::default(), now).bias,
+            bias
+        );
+    }
 }
 #[test]
 fn freshness_skew_and_volume_boundaries() {
@@ -90,4 +118,27 @@ fn latest_recovery_cannot_skip_hold_after_offline() {
         assert_eq!(robot.poll().unwrap().bias, Bias::Hold);
         assert_eq!(robot.poll().unwrap().bias, Bias::LongBiasAster);
     }
+}
+
+#[test]
+fn idle_books_expire_without_waiting_for_the_periodic_report() {
+    let config =
+        RobotConfig::new(Duration::from_millis(100), Duration::ZERO, qty(SCALE), 2).unwrap();
+    let mut binance = book(Instant::now(), 100_000, SCALE);
+    let mut aster = book(Instant::now(), 99_000, SCALE);
+    // Stamp after allocation so setup time does not consume the freshness budget.
+    let received = Instant::now();
+    binance.apply_diff(&diff(received)).unwrap();
+    aster.apply_diff(&diff(received)).unwrap();
+    let mut robot = super::Robot::new(view(&binance), view(&aster), config);
+    assert_eq!(robot.poll().unwrap().bias, Bias::LongBiasAster);
+    std::thread::sleep(config.max_age() + Duration::from_millis(10));
+    // Keep the report deadline in the future even if the test thread was descheduled.
+    robot.next_report = Some(Instant::now() + crate::config::REPORT_INTERVAL);
+    let decision = robot
+        .poll()
+        .expect("freshness deadline must trigger a decision");
+    assert_eq!(decision.bias, Bias::Hold);
+    assert_eq!(decision.binance.status, BookStatus::Online);
+    assert_eq!(decision.aster.status, BookStatus::Online);
 }

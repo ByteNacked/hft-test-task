@@ -64,6 +64,27 @@ fn decision(bias: Bias) -> Decision {
 }
 
 #[test]
+fn bps_explanation_distinguishes_exact_threshold_from_a_crossing() {
+    let now = Instant::now();
+    let mid = 100 * crate::numeric::SCALE;
+    let binance = view(&book(now, mid, crate::numeric::SCALE));
+    let threshold = mid * 2 / 10_000;
+    for (offset, bias, expected) in [
+        (-threshold - 1, Bias::LongBiasAster, "-2.000000…/2"),
+        (-threshold, Bias::Hold, "-2.000000/2"),
+        (-threshold + 1, Bias::Hold, "-1.999999…/2"),
+        (threshold - 1, Bias::Hold, "+1.999999…/2"),
+        (threshold, Bias::Hold, "+2.000000/2"),
+        (threshold + 1, Bias::ShortBiasAster, "+2.000000…/2"),
+    ] {
+        let aster = view(&book(now, mid + offset, crate::numeric::SCALE));
+        let d = robot::evaluate(binance.view(), aster.view(), &RobotConfig::default(), now);
+        assert_eq!(d.bias, bias);
+        assert_eq!(Bps(&d).to_string(), expected);
+    }
+}
+
+#[test]
 fn formatting_is_off_robot_and_drop_drains_with_original_time_and_filters() {
     let _subscriber = SUBSCRIBER_TEST.lock().unwrap();
     for level in ["info", "debug", "warn"] {
@@ -125,8 +146,8 @@ fn formatting_is_off_robot_and_drop_drains_with_original_time_and_filters() {
                 assert!(text.contains("best_bid=3499.01"), "{text}");
                 assert!(text.contains("LongBiasAster"));
                 assert!(text.contains("ShortBiasAster"));
-                assert!(text.contains("bps=-2.857143/2"), "{text}");
-                assert!(text.contains("bps=+2.857143/2"), "{text}");
+                assert!(text.contains("bps=-2.857142…/2"), "{text}");
+                assert!(text.contains("bps=+2.857142…/2"), "{text}");
             }
         });
     }

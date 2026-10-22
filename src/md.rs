@@ -15,7 +15,11 @@ pub(crate) use adapter::{Backoff, get_body, shutdown_requested};
 use std::time::Instant;
 use thiserror::Error;
 
-pub const MAX_UNIX_MS: u64 = 253_402_300_799_999; // Last millisecond of year 9999.
+/// Last millisecond representable by the configured `time` date range (UTC).
+pub const MAX_UNIX_MS: u64 = (time::PrimitiveDateTime::MAX
+    .assume_utc()
+    .unix_timestamp_nanos()
+    / 1_000_000) as u64;
 /// Monotonic timestamp captured on receipt of a complete WS message, before parsing.
 pub type ReceiveTime = Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +115,7 @@ pub struct DiffScratch {
 impl Default for DiffScratch {
     fn default() -> Self {
         Self {
-            seen: vec![0; config::BOOK_PRICE_SLOTS.div_ceil(64)].into_boxed_slice(),
+            seen: vec![0; config::BOOK_PRICE_SLOTS.div_ceil(u64::BITS as usize)].into_boxed_slice(),
         }
     }
 }
@@ -133,8 +137,8 @@ impl DiffScratch {
             }
             let duplicate = side.iter().any(|level| {
                 let index = level.index();
-                let word = &mut self.seen[index / 64];
-                let bit = 1 << (index % 64);
+                let word = &mut self.seen[index / u64::BITS as usize];
+                let bit = 1 << (index % u64::BITS as usize);
                 let duplicate = *word & bit != 0;
                 *word |= bit;
                 duplicate
@@ -142,7 +146,7 @@ impl DiffScratch {
             // All indices were checked during decoding. Clear touched words even on
             // error; both sides and subsequent messages reuse the same clean bitmap.
             for level in side {
-                self.seen[level.index() / 64] = 0;
+                self.seen[level.index() / u64::BITS as usize] = 0;
             }
             if duplicate {
                 return Err(BookError::DuplicatePrice.into());

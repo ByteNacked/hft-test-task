@@ -92,8 +92,9 @@ pub(crate) async fn run<P: MDAdapter>(
                     } | AdapterError::Http(_)
                 ) =>
             {
-                tracing::warn!(venue = P::NAME, %error, "metadata request failed");
-                let deadline = Instant::now() + backoff.next(error.retry_after());
+                let delay = backoff.next(error.retry_after());
+                tracing::warn!(venue = P::NAME, %error, retry_in_ms=delay.as_millis() as u64, "metadata request failed");
+                let deadline = Instant::now() + delay;
                 tokio::select! {
                     _ = shutdown_requested(&mut shutdown) => { return Ok(()); }
                     _ = sleep_until(deadline) => {}
@@ -195,7 +196,6 @@ impl<P: MDAdapter> Runner<P> {
                 }
                 Err(error) => error,
             };
-            Self::log_recovery(&error);
             if error.fatal() {
                 return Err(error);
             }
@@ -203,8 +203,9 @@ impl<P: MDAdapter> Runner<P> {
             self.log_state();
 
             self.job.cancel_http();
-            let deadline =
-                (Instant::now() + self.backoff.next(error.retry_after())).max(self.next_snapshot);
+            let now = Instant::now();
+            let deadline = (now + self.backoff.next(error.retry_after())).max(self.next_snapshot);
+            Self::log_recovery(&error, "reconnect", deadline - now);
             tokio::select! {
                 _ = shutdown_requested(shutdown) => return Ok(()),
                 _ = sleep_until(deadline) => {}
@@ -212,15 +213,16 @@ impl<P: MDAdapter> Runner<P> {
         }
     }
     #[cold]
-    fn log_recovery(error: &AdapterError) {
+    fn log_recovery(error: &AdapterError, action: &'static str, retry_in: Duration) {
+        let retry_in_ms = retry_in.as_millis() as u64;
         if matches!(
             error,
             AdapterError::Book(BookError::PriceRange { .. })
                 | AdapterError::Protocol(ProtocolError::Book(BookError::PriceRange { .. }))
         ) {
-            tracing::error!(venue=P::NAME, %error, "book price window exceeded; reload snapshot and recenter");
+            tracing::error!(venue=P::NAME, %error, action, retry_in_ms, "book price window exceeded; reload snapshot and recenter");
         } else {
-            tracing::warn!(venue=P::NAME, %error, "market-data recovery");
+            tracing::warn!(venue=P::NAME, %error, action, retry_in_ms, "market-data recovery");
         }
     }
     fn log_state(&mut self) {
@@ -275,12 +277,17 @@ impl<P: MDAdapter> Runner<P> {
     #[cold]
     fn recover(&mut self, error: AdapterError) -> Result<(), AdapterError> {
         self.offline()?;
-        Self::log_recovery(&error);
         if error.fatal() {
             return Err(error);
         }
         let delay = self.backoff.next(error.retry_after());
-        self.begin_sync(delay)
+        self.begin_sync(delay)?;
+        Self::log_recovery(
+            &error,
+            "resync",
+            self.next_snapshot.saturating_duration_since(Instant::now()),
+        );
+        Ok(())
     }
     fn enqueue(&mut self, text: Utf8Bytes, received: ReceiveTime) -> Result<(), AdapterError> {
         if self.queue.len() == self.settings.queue_messages

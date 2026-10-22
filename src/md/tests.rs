@@ -67,6 +67,18 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
             .is_err()
         );
         let base: Value = serde_json::from_slice(protocol.diff_fixture).unwrap();
+        let mut last_timestamp = base.clone();
+        last_timestamp["data"]["E"] = json!(super::MAX_UNIX_MS);
+        last_timestamp["data"]["T"] = json!(super::MAX_UNIX_MS);
+        (protocol.diff)(
+            &serde_json::to_vec(&last_timestamp).unwrap(),
+            receive,
+            rules,
+            &mut diff,
+            &mut scratch,
+            crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
+        )
+        .unwrap();
         for (field, value) in [
             ("s", json!("BTCUSDT")),
             ("e", json!("bookTicker")),
@@ -75,6 +87,8 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
             ("u", json!(-1)),
             ("E", json!("1700000000002")),
             ("E", json!(u64::MAX)),
+            ("E", json!(super::MAX_UNIX_MS + 1)),
+            ("T", json!(super::MAX_UNIX_MS + 1)),
             ("T", json!(-1)),
             ("a", json!([["3501", "-1"]])),
             ("b", json!([[3500, "1"]])),

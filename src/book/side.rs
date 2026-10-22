@@ -20,11 +20,11 @@ pub(super) struct Side {
 }
 impl Side {
     pub(super) fn new(descending: bool) -> Self {
-        let words = BOOK_PRICE_SLOTS.div_ceil(64);
+        let words = BOOK_PRICE_SLOTS.div_ceil(u64::BITS as usize);
         Self {
             quantities: vec![Qty::ZERO; BOOK_PRICE_SLOTS].into_boxed_slice(),
             occupied: vec![0; words].into_boxed_slice(),
-            nonempty_words: vec![0; words.div_ceil(64)].into_boxed_slice(),
+            nonempty_words: vec![0; words.div_ceil(u64::BITS as usize)].into_boxed_slice(),
             descending,
             best_group: None,
             top: ArrayVec::new(),
@@ -45,9 +45,9 @@ impl Side {
         (0..count).flat_map(move |i| {
             let group = if descending { start - i } else { start + i };
             bits(self.nonempty_words[group], descending).flat_map(move |bit| {
-                let word = group * 64 + bit;
+                let word = group * u64::BITS as usize + bit;
                 bits(self.occupied[word], descending).map(move |bit| {
-                    let index = word * 64 + bit;
+                    let index = word * u64::BITS as usize + bit;
                     Level {
                         price: window.price(index),
                         qty: self.quantities[index],
@@ -61,13 +61,13 @@ impl Side {
         if (old == Qty::ZERO) == (qty == Qty::ZERO) {
             return old; // Quantity-only updates do not change bitmap occupancy.
         }
-        let word = index / 64;
-        let group = word / 64;
-        let bit = 1_u64 << (index % 64);
+        let word = index / u64::BITS as usize;
+        let group = word / u64::BITS as usize;
+        let bit = 1_u64 << (index % u64::BITS as usize);
         if qty == Qty::ZERO {
             self.occupied[word] &= !bit;
             if self.occupied[word] == 0 {
-                self.nonempty_words[group] &= !(1_u64 << (word % 64));
+                self.nonempty_words[group] &= !(1_u64 << (word % u64::BITS as usize));
                 if self.nonempty_words[group] == 0 && self.best_group == Some(group) {
                     self.best_group = if self.descending {
                         (0..group).rev().find(|&i| self.nonempty_words[i] != 0)
@@ -79,7 +79,7 @@ impl Side {
             }
         } else {
             self.occupied[word] |= bit;
-            self.nonempty_words[group] |= 1_u64 << (word % 64);
+            self.nonempty_words[group] |= 1_u64 << (word % u64::BITS as usize);
             if self.best_group.is_none_or(|best| {
                 if self.descending {
                     group > best
@@ -137,7 +137,7 @@ fn bits(mut word: u64, descending: bool) -> impl Iterator<Item = usize> {
             return None;
         }
         let bit = if descending {
-            63 - word.leading_zeros()
+            u64::BITS - 1 - word.leading_zeros()
         } else {
             word.trailing_zeros()
         };

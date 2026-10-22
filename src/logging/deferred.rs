@@ -141,9 +141,20 @@ impl std::fmt::Display for Bps<'_> {
                 if d.binance.status == BookStatus::Online
                     && d.aster.status == BookStatus::Online =>
             {
-                // Approximate display on the formatter thread; trading comparisons stay exact.
-                let bps = (aster - binance) as f64 * 10_000.0 / binance as f64;
-                write!(f, "{bps:+.6}/{}", d.threshold_bps)
+                // Mid sums are bounded by 2*i64::MAX, so scaling by 10^10 fits i128.
+                // Keep a visible remainder: rounding could hide a strict threshold crossing.
+                let edge = (aster - binance) * 10_000;
+                let scaled = edge.abs() * 1_000_000;
+                let bps = scaled / binance;
+                let sign = if edge < 0 { '-' } else { '+' };
+                let tail = if scaled % binance == 0 { "" } else { "…" };
+                write!(
+                    f,
+                    "{sign}{}.{:06}{tail}/{}",
+                    bps / 1_000_000,
+                    bps % 1_000_000,
+                    d.threshold_bps
+                )
             }
             _ => write!(f, "n/a/{}", d.threshold_bps),
         }

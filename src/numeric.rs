@@ -1,12 +1,16 @@
 //! Decimal fixed point: raw / 10^9. No operation silently rounds.
 use std::{fmt, str::FromStr};
 
-use fixnum::{FixedPoint, typenum::U9};
+use fixnum::{
+    FixedPoint,
+    ops::{One, Zero},
+    typenum::U9,
+};
 use serde::{Deserialize, Deserializer, de};
 use thiserror::Error;
 
 pub type Fp = FixedPoint<i64, U9>;
-pub const SCALE: i64 = 1_000_000_000;
+pub const SCALE: i64 = *Fp::ONE.as_bits();
 pub const MAX_NUMBER_LEN: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -40,7 +44,7 @@ fn parse_exact(value: &str) -> Result<Fp, NumericError> {
     for (index, byte) in value.bytes().enumerate() {
         match byte {
             b'0'..=b'9' => {
-                if decimal && fractional_digits == 9 {
+                if decimal && fractional_digits == Fp::PRECISION as u32 {
                     lost_precision |= byte != b'0';
                 } else {
                     raw = raw
@@ -57,7 +61,7 @@ fn parse_exact(value: &str) -> Result<Fp, NumericError> {
     if lost_precision {
         return Err(precision_loss("parse"));
     }
-    raw.checked_mul(10_i64.pow(9 - fractional_digits))
+    raw.checked_mul(10_i64.pow(Fp::PRECISION as u32 - fractional_digits))
         .map(Fp::from_bits)
         .ok_or(NumericError::Overflow)
 }
@@ -117,8 +121,8 @@ macro_rules! quantity {
 quantity!(Price, true);
 quantity!(Qty, false);
 impl Qty {
-    pub const ZERO: Self = Self(Fp::from_bits(0));
-    pub const ONE: Self = Self(Fp::from_bits(SCALE));
+    pub const ZERO: Self = Self(Fp::ZERO);
+    pub const ONE: Self = Self(Fp::ONE);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
