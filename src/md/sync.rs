@@ -27,10 +27,12 @@ impl SyncedBook {
             ready: false,
         })
     }
+    #[cold]
     pub(crate) fn reset(&mut self) {
         self.snapshot_id = None;
         self.ready = false;
     }
+    #[cold]
     pub(crate) fn load(&mut self, snapshot: &Snapshot) -> Result<(), AdapterError> {
         self.book.load_snapshot(snapshot)?;
         self.snapshot_id = Some(snapshot.last_update_id);

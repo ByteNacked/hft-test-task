@@ -23,6 +23,7 @@ pub enum NumericError {
     InvalidStep,
 }
 
+#[cold]
 fn precision_loss(operation: &'static str) -> NumericError {
     tracing::error!(operation, "fixed-point precision loss; value rejected");
     NumericError::PrecisionLoss

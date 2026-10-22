@@ -211,6 +211,7 @@ impl<P: MDAdapter> Runner<P> {
             }
         }
     }
+    #[cold]
     fn log_recovery(error: &AdapterError) {
         if matches!(
             error,
@@ -237,6 +238,7 @@ impl<P: MDAdapter> Runner<P> {
         );
         self.next_log = Instant::now() + config::REPORT_INTERVAL;
     }
+    #[cold]
     fn offline(&mut self) -> Result<(), AdapterError> {
         self.publish(BookStatus::Offline)?;
         self.log_status(false);
@@ -254,6 +256,7 @@ impl<P: MDAdapter> Runner<P> {
             logging::feed(P::NAME, FeedEvent::Status(online));
         }
     }
+    #[cold]
     fn begin_sync(&mut self, delay: Duration) -> Result<(), AdapterError> {
         self.sync_epoch = self
             .sync_epoch
@@ -269,6 +272,7 @@ impl<P: MDAdapter> Runner<P> {
         self.state = FeedState::Buffering;
         Ok(())
     }
+    #[cold]
     fn recover(&mut self, error: AdapterError) -> Result<(), AdapterError> {
         self.offline()?;
         Self::log_recovery(&error);
@@ -322,6 +326,7 @@ impl<P: MDAdapter> Runner<P> {
         self.state = FeedState::Live;
         Ok(())
     }
+    #[cold]
     fn complete(&mut self, completion: Completion) -> Result<(), AdapterError> {
         match completion {
             Completion::Body(epoch, result) => {

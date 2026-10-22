@@ -165,6 +165,7 @@ impl OrderBook {
         self.window
     }
     /// Snapshot levels are already sorted and validated by the decoder.
+    #[cold]
     pub(crate) fn load_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), BookError> {
         let coverage = Coverage {
             bid_floor: snapshot.bids.last().ok_or(BookError::EmptySide)?.price,
