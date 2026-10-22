@@ -38,14 +38,27 @@ fn subscriber(seen: Seen, level: &str) -> impl tracing::Subscriber + Send + Sync
 }
 fn decision(bias: Bias) -> Decision {
     let now = Instant::now();
-    let reader = view(&book(now, 100_000, crate::numeric::SCALE));
+    let binance = view(&book(
+        now,
+        3500 * crate::numeric::SCALE,
+        crate::numeric::SCALE,
+    ));
+    let aster_mid = match bias {
+        Bias::LongBiasAster => 3499,
+        Bias::ShortBiasAster => 3501,
+        Bias::Hold => 3500,
+    };
+    let aster = view(&book(
+        now,
+        aster_mid * crate::numeric::SCALE,
+        crate::numeric::SCALE,
+    ));
     let mut d = robot::evaluate(
-        reader.view(),
-        reader.view(),
+        binance.view(),
+        aster.view(),
         &RobotConfig::default(),
         Instant::now(),
     );
-    d.bias = bias;
     d.binance.best_bid = Some("3499.01".parse().unwrap());
     d
 }
@@ -112,6 +125,8 @@ fn formatting_is_off_robot_and_drop_drains_with_original_time_and_filters() {
                 assert!(text.contains("best_bid=3499.01"), "{text}");
                 assert!(text.contains("LongBiasAster"));
                 assert!(text.contains("ShortBiasAster"));
+                assert!(text.contains("bps=-2.857143/2"), "{text}");
+                assert!(text.contains("bps=+2.857143/2"), "{text}");
             }
         });
     }

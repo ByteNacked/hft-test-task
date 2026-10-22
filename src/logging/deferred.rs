@@ -1,4 +1,5 @@
 use crate::{
+    book::BookStatus,
     config,
     md::feed::FeedState,
     robot::{Bias, Decision},
@@ -131,6 +132,24 @@ pub fn decision_reporter() -> std::io::Result<impl FnMut(&Decision) + Send + 'st
     Ok(reporter(events.clone()))
 }
 
+struct Bps<'a>(&'a Decision);
+impl std::fmt::Display for Bps<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let d = self.0;
+        match d.binance.mid2_raw.zip(d.aster.mid2_raw) {
+            Some((binance, aster))
+                if d.binance.status == BookStatus::Online
+                    && d.aster.status == BookStatus::Online =>
+            {
+                // Approximate display on the formatter thread; trading comparisons stay exact.
+                let bps = (aster - binance) as f64 * 10_000.0 / binance as f64;
+                write!(f, "{bps:+.6}/{}", d.threshold_bps)
+            }
+            _ => write!(f, "n/a/{}", d.threshold_bps),
+        }
+    }
+}
+
 fn emit(record: Record) {
     super::EVENT_TIME.set(Some(record.time));
     match record.event {
@@ -140,10 +159,10 @@ fn emit(record: Record) {
         } => {
             if changed {
                 tracing::info!(name: "bias_changed", target: "hft_test_task::logging", bias=?d.bias,
-                    binance=%d.binance, aster=%d.aster, "bias changed");
+                    binance=%d.binance, aster=%d.aster, bps=%Bps(&d), "bias changed");
             }
             tracing::debug!(target: "hft_test_task::logging", binance=%d.binance, aster=%d.aster, bias=?d.bias,
-                skew_ms=d.skew.map(|s|s.as_millis() as u64), threshold_bps=d.threshold_bps, "robot decision");
+                skew_ms=d.skew.map(|s|s.as_millis() as u64), bps=%Bps(&d), "robot decision");
         }
         Event::Feed { venue, event } => match event {
             FeedEvent::Started(id) => {

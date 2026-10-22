@@ -102,8 +102,27 @@ Watchdog: 3 с без применённого diff, Ping и дубли не у�
 | WARN/ERROR | Сбой, восстановление или фатальная ошибка; красный фон |
 | DEBUG | Подключение/shutdown, `feed state` с последним применённым `u` и `exchange_time` (Unix ms), секундный отчёт робота |
 
+В решениях `bps=текущее/порог`: `(mid Aster / mid Binance - 1) × 10000`, со знаком и шестью знаками после запятой для отображения. При Offline — `n/a/порог`. Сравнение для bias остаётся точным, без округления.
+
 INFO/DEBUG робота и фидов передаются без аллокаций в общую `ArrayQueue`; форматирование и запись выполняются в фоновых потоках. WARN/ERROR на путях ошибок форматируются вызывающим потоком. Обе очереди ограничены 4096 записями и отбрасывают новые при заполнении; потери событий в `ArrayQueue` логируются как ERROR. При штатном выходе очереди дочитываются. Начальные Offline/Hold не логируются как переходы.
 
-Основные библиотеки: `tokio` (один multi-thread runtime, два workers; по task на фид), `tokio-tungstenite` + `rustls` (WS), `reqwest` (REST), `serde`/`serde_json` (типизированный разбор), `arrayvec` (ограниченные уровни), `triple_buffer` (публикация последней книги), `fixnum` (числа), `clap` (CLI), `tracing`/`tracing-subscriber`/`tracing-appender` (логи), `crossbeam-queue` (общая очередь событий логирования), `time` (UTC timestamps логов), `thiserror` (ошибки), `fastrand`/`httpdate` (backoff). `proptest` проверяет книгу и точный парсер. Точные версии — `Cargo.lock`.
+| Библиотеки | Назначение |
+| --- | --- |
+| `tokio` | Один multi-thread runtime, два workers; по task на фид |
+| `tokio-tungstenite`, `rustls` | WebSocket и TLS |
+| `reqwest` | REST-запросы |
+| `serde`, `serde_json` | Типизированный разбор сообщений |
+| `arrayvec` | Массивы уровней фиксированной ёмкости |
+| `triple_buffer` | Публикация последней версии книги роботу |
+| `fixnum` | Десятичный fixed-point для `Price` и `Qty` |
+| `clap` | CLI и параметры окружения |
+| `tracing`, `tracing-subscriber`, `tracing-appender` | События, форматирование и фоновая запись логов |
+| `crossbeam-queue` | Общая очередь событий логирования |
+| `time` | UTC timestamps логов |
+| `thiserror` | Типы ошибок |
+| `fastrand`, `httpdate` | Jitter backoff и разбор `Retry-After` |
+| `proptest` | Property-тесты книги и точного парсера |
+
+Точные версии — `Cargo.lock`.
 
 [Архитектура](docs/ARCHITECTURE.md) · [Проверки](docs/VALIDATION.md) · [План реализации](docs/IMPLEMENTATION_PLAN.md).
