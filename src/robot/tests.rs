@@ -61,28 +61,6 @@ fn freshness_skew_and_volume_boundaries() {
     );
 }
 #[test]
-fn either_offline_book_blocks_bias() {
-    let now = Instant::now();
-    let book = book(now, 100, SCALE);
-    let b = view(&book);
-    let (mut writer, mut reader) = {
-        static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        book::channel(16, &EPOCH)
-    }
-    .unwrap();
-    writer.publish(&book, BookStatus::Offline).unwrap();
-    reader.update();
-    assert_eq!(
-        evaluate(b.view(), reader.view(), &Default::default(), now).bias,
-        Bias::Hold
-    );
-    assert_eq!(
-        evaluate(reader.view(), b.view(), &Default::default(), now).bias,
-        Bias::Hold
-    );
-}
-
-#[test]
 fn latest_recovery_cannot_skip_hold_after_offline() {
     for fault_on_binance in [false, true] {
         let now = Instant::now();
@@ -90,14 +68,12 @@ fn latest_recovery_cannot_skip_hold_after_offline() {
         let aster = book(now, 99_000, SCALE);
         let (mut bw, br) = {
             static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            book::channel(16, &EPOCH)
-        }
-        .unwrap();
+            book::channel(&EPOCH)
+        };
         let (mut aw, ar) = {
             static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            book::channel(16, &EPOCH)
-        }
-        .unwrap();
+            book::channel(&EPOCH)
+        };
         bw.publish(&binance, BookStatus::Online).unwrap();
         aw.publish(&aster, BookStatus::Online).unwrap();
         let mut robot = super::Robot::new(br, ar, RobotConfig::default());

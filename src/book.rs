@@ -32,7 +32,7 @@ pub struct IndexedLevel {
     pub qty: Qty,
 }
 impl IndexedLevel {
-    pub fn new(
+    pub(crate) fn new(
         level: Level,
         rules: InstrumentRules,
         window: PriceWindow,
@@ -56,7 +56,7 @@ pub struct PriceWindow {
     base_ticks: i64,
 }
 impl PriceWindow {
-    pub fn new(tick: Price) -> Result<Self, BookError> {
+    pub(crate) fn new(tick: Price) -> Result<Self, BookError> {
         tick.raw()
             .checked_mul((BOOK_PRICE_SLOTS - 1) as i64)
             .ok_or(NumericError::Overflow)?;
@@ -113,8 +113,6 @@ pub enum BookError {
     Numeric(#[from] NumericError),
     #[error("duplicate price in one payload side")]
     DuplicatePrice,
-    #[error("book capacity exceeded")]
-    Capacity,
     #[error("price {price} is outside book range [{min_price}, {max_price}]")]
     PriceRange {
         price: Price,
@@ -144,7 +142,7 @@ pub struct OrderBook {
     event_time: Option<EventTime>,
 }
 impl OrderBook {
-    pub fn new(tick_size: Price) -> Result<Self, BookError> {
+    pub(crate) fn new(tick_size: Price) -> Result<Self, BookError> {
         let window = PriceWindow::new(tick_size)?;
         Ok(Self {
             bids: Side::new(true),
@@ -154,16 +152,16 @@ impl OrderBook {
             event_time: None,
         })
     }
-    pub fn bids(&self) -> impl Iterator<Item = Level> + '_ {
+    pub(crate) fn bids(&self) -> impl Iterator<Item = Level> + '_ {
         self.bids.levels(self.window)
     }
-    pub fn asks(&self) -> impl Iterator<Item = Level> + '_ {
+    pub(crate) fn asks(&self) -> impl Iterator<Item = Level> + '_ {
         self.asks.levels(self.window)
     }
-    pub fn event_time(&self) -> Option<EventTime> {
+    pub(crate) fn event_time(&self) -> Option<EventTime> {
         self.event_time
     }
-    pub fn window(&self) -> PriceWindow {
+    pub(crate) fn window(&self) -> PriceWindow {
         self.window
     }
     /// Snapshot levels are already sorted and validated by the decoder.

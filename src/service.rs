@@ -22,8 +22,6 @@ use tokio::{
 pub enum ServiceError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Publication(#[from] book::BookError),
     #[error("{worker}: {detail}")]
     Worker {
         worker: &'static str,
@@ -98,8 +96,8 @@ pub async fn run(
     shutdown: impl Future<Output = std::io::Result<()>>,
     report: impl FnMut(&Decision) + Send + 'static,
 ) -> Result<(), ServiceError> {
-    let (bw, br) = book::channel(config::PUBLISHED_LEVELS, &BINANCE_OFFLINE_EPOCH)?;
-    let (aw, ar) = book::channel(config::PUBLISHED_LEVELS, &ASTER_OFFLINE_EPOCH)?;
+    let (bw, br) = book::channel(&BINANCE_OFFLINE_EPOCH);
+    let (aw, ar) = book::channel(&ASTER_OFFLINE_EPOCH);
     let (stop_feeds, shutdown_feeds) = watch::channel(false);
     let stop_robot = Arc::new(AtomicBool::new(false));
     // Spawn the only fallible OS thread first, before starting adapter tasks.

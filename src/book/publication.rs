@@ -1,8 +1,9 @@
 //! Latest book view plus an independent, persistent generation of feed gaps.
 use crate::{
     book::{BookError, Level, OrderBook},
-    config::{PUBLISHED_LEVELS, ROBOT_LEVELS},
+    config::PUBLISHED_LEVELS,
 };
+use arrayvec::ArrayVec;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Instant,
@@ -16,43 +17,17 @@ pub enum BookStatus {
     Online,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
 pub struct BookView {
-    pub(crate) bids: Vec<Level>,
-    pub(crate) asks: Vec<Level>,
+    pub(crate) bids: ArrayVec<Level, PUBLISHED_LEVELS>,
+    pub(crate) asks: ArrayVec<Level, PUBLISHED_LEVELS>,
     pub(crate) status: BookStatus,
     pub(crate) exchange_time: Option<u64>,
     pub(crate) platform_time: Option<Instant>,
     epoch: Option<u64>,
 }
-impl BookView {
-    fn empty(capacity: usize) -> Self {
-        Self {
-            bids: Vec::with_capacity(capacity),
-            asks: Vec::with_capacity(capacity),
-            status: BookStatus::Offline,
-            exchange_time: None,
-            platform_time: None,
-            epoch: None,
-        }
-    }
-}
-impl Clone for BookView {
-    fn clone(&self) -> Self {
-        // TripleBuffer clones at construction; preserve the empty Vecs' capacity.
-        let mut cloned = Self::empty(self.bids.capacity());
-        cloned.bids.extend_from_slice(&self.bids);
-        cloned.asks.extend_from_slice(&self.asks);
-        cloned.status = self.status;
-        cloned.exchange_time = self.exchange_time;
-        cloned.platform_time = self.platform_time;
-        cloned.epoch = self.epoch;
-        cloned
-    }
-}
 pub struct BookPublisher {
     input: Input<BookView>,
-    capacity: usize,
     offline_epoch: &'static AtomicU64,
 }
 pub struct BookReader {
@@ -60,23 +35,15 @@ pub struct BookReader {
     offline_epoch: &'static AtomicU64,
     seen_epoch: u64,
 }
-/// Capacity limits published levels per side, independently of the source book.
 /// One channel per counter; its publisher is the only writer to that counter.
-pub fn channel(
-    capacity: usize,
-    offline_epoch: &'static AtomicU64,
-) -> Result<(BookPublisher, BookReader), BookError> {
-    if !(ROBOT_LEVELS..=PUBLISHED_LEVELS).contains(&capacity) {
-        return Err(BookError::Capacity);
-    }
+pub fn channel(offline_epoch: &'static AtomicU64) -> (BookPublisher, BookReader) {
     // Preserve the generation across sequential service runs; never reset a
     // counter that may still be observed by a reader.
     let seen_epoch = offline_epoch.load(Ordering::Acquire);
-    let (input, output) = TripleBuffer::new(&BookView::empty(capacity)).split();
-    Ok((
+    let (input, output) = TripleBuffer::new(&BookView::default()).split();
+    (
         BookPublisher {
             input,
-            capacity,
             offline_epoch,
         },
         BookReader {
@@ -84,7 +51,7 @@ pub fn channel(
             offline_epoch,
             seen_epoch,
         },
-    ))
+    )
 }
 impl BookPublisher {
     /// Offline invalidates all older views independently of book publication.
@@ -105,14 +72,8 @@ impl BookPublisher {
             return Err(BookError::NotReady);
         }
         let slot = self.input.input_buffer_mut();
-        slot.bids.clear();
-        slot.asks.clear();
-        let bids = &book.bids.top;
-        let asks = &book.asks.top;
-        slot.bids
-            .extend_from_slice(&bids[..bids.len().min(self.capacity)]);
-        slot.asks
-            .extend_from_slice(&asks[..asks.len().min(self.capacity)]);
+        slot.bids.clone_from(&book.bids.top);
+        slot.asks.clone_from(&book.asks.top);
         slot.status = status;
         // Only this producer increments the epoch; book data travels through the triple buffer.
         slot.epoch = Some(self.offline_epoch.load(Ordering::Relaxed));

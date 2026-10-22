@@ -61,9 +61,8 @@ pub fn book(now: Instant, mid: i64, quantity: i64) -> OrderBook {
 pub fn view(book: &OrderBook) -> BookReader {
     let (mut writer, mut reader) = {
         static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        book::channel(crate::config::PUBLISHED_LEVELS, &EPOCH)
-    }
-    .unwrap();
+        book::channel(&EPOCH)
+    };
     writer.publish(book, BookStatus::Online).unwrap();
     reader.update();
     reader

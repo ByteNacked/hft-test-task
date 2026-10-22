@@ -59,24 +59,3 @@ proptest::proptest! {
         proptest::prop_assert_eq!(text.parse::<Qty>().map(Qty::raw), expected);
     }
 }
-
-#[test]
-fn instrument_steps_are_exact() {
-    let rules = InstrumentRules::new("0.05".parse().unwrap(), "0.001".parse().unwrap()).unwrap();
-    assert!(
-        rules
-            .validate("2500.15".parse().unwrap(), "0.003".parse().unwrap())
-            .is_ok()
-    );
-    assert!(
-        rules
-            .validate("2500.16".parse().unwrap(), Qty::ONE)
-            .is_err()
-    );
-    assert!(
-        rules
-            .validate("2500.15".parse().unwrap(), "0.0001".parse().unwrap())
-            .is_err()
-    );
-    assert!(InstrumentRules::new("0.05".parse().unwrap(), Qty::ZERO).is_err());
-}

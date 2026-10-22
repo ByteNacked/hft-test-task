@@ -63,8 +63,12 @@ pub trait MDAdapter: Send + Sized + 'static {
     const WS_URL: &'static str;
     const METADATA_URL: &'static str;
     const SNAPSHOT_URL: &'static str;
-    fn decode_metadata(body: &[u8]) -> Result<InstrumentRules, ProtocolError>;
-    fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError>;
+    fn decode_metadata(body: &[u8]) -> Result<InstrumentRules, ProtocolError> {
+        super::rest::decode_metadata(body)
+    }
+    fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError> {
+        super::rest::decode_snapshot(body, rules)
+    }
     /// Decode against the current snapshot window, reusing output and scratch.
     /// Preserves wire order. Never apply output on error.
     fn decode_diff_into(

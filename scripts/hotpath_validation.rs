@@ -37,36 +37,16 @@ impl<P: MDAdapter> MDAdapter for BenchAdapter<P> {
     const WS_URL: &'static str = P::WS_URL;
     const METADATA_URL: &'static str = P::METADATA_URL;
     const SNAPSHOT_URL: &'static str = P::SNAPSHOT_URL;
-    fn decode_metadata(body: &[u8]) -> Result<InstrumentRules, ProtocolError> {
-        P::decode_metadata(body)
-    }
-    fn decode_snapshot(body: &[u8], rules: InstrumentRules) -> Result<Snapshot, ProtocolError> {
-        P::decode_snapshot(body, rules)
-    }
-    #[cfg(not(feature = "bench-old-api"))]
+
     fn decode_diff_into(
         body: &[u8],
         received: ReceiveTime,
         rules: InstrumentRules,
         out: &mut DepthDiff,
-        #[cfg(feature = "bench-unsorted-diff")] scratch: &mut crate::md::DiffScratch,
-        #[cfg(feature = "bench-offset-book")] window: crate::book::PriceWindow,
+        scratch: &mut crate::md::DiffScratch,
+        window: crate::book::PriceWindow,
     ) -> Result<(), ProtocolError> {
-        P::decode_diff_into(
-            body, received, rules, out,
-            #[cfg(feature = "bench-unsorted-diff")]
-            scratch,
-            #[cfg(feature = "bench-offset-book")]
-            window,
-        )
-    }
-    #[cfg(feature = "bench-old-api")]
-    fn decode_diff(
-        body: &[u8],
-        received: ReceiveTime,
-        rules: InstrumentRules,
-    ) -> Result<crate::md::DepthDiff, ProtocolError> {
-        P::decode_diff(body, received, rules)
+        P::decode_diff_into(body, received, rules, out, scratch, window)
     }
     async fn run(
         self,
@@ -79,13 +59,8 @@ impl<P: MDAdapter> MDAdapter for BenchAdapter<P> {
             settings: Settings::for_adapter::<P>(),
             client: reqwest::Client::new(),
             rules,
-            #[cfg(not(feature = "bench-price-slots"))]
-            synced: Box::new(SyncedBook::new()?),
-            #[cfg(feature = "bench-price-slots")]
             synced: Box::new(SyncedBook::new(rules)?),
-            #[cfg(not(feature = "bench-old-api"))]
             incoming: Box::default(),
-            #[cfg(feature = "bench-unsorted-diff")]
             scratch: Default::default(),
             books,
             state: FeedState::Connecting,
@@ -115,18 +90,8 @@ impl<P: MDAdapter> MDAdapter for BenchAdapter<P> {
             for i in begin..(begin + 4096).min(self.depth) {
                 let bid = level(3490 * SCALE - i as i64 * 10_000_000, SCALE);
                 let ask = level(3510 * SCALE + i as i64 * 10_000_000, SCALE);
-                #[cfg(feature = "bench-indexed-diff")]
-                let bid = crate::book::IndexedLevel::new(
-                    bid, rules,
-                    #[cfg(feature = "bench-offset-book")]
-                    runner.synced.book.window(),
-                )?;
-                #[cfg(feature = "bench-indexed-diff")]
-                let ask = crate::book::IndexedLevel::new(
-                    ask, rules,
-                    #[cfg(feature = "bench-offset-book")]
-                    runner.synced.book.window(),
-                )?;
+                let bid = crate::book::IndexedLevel::new(bid, rules, runner.synced.book.window())?;
+                let ask = crate::book::IndexedLevel::new(ask, rules, runner.synced.book.window())?;
                 extra.bids.push(bid);
                 extra.asks.push(ask);
             }
@@ -200,10 +165,7 @@ fn message_index(numbers: &BookNumbers) -> Option<usize> {
 #[test]
 #[ignore]
 fn threaded_hotpath_validation() {
-    #[cfg(feature = "bench-shared-logs")]
     let _logs = logging::init_logging().unwrap();
-    #[cfg(not(feature = "bench-shared-logs"))]
-    let _logs = logging::init_logging();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(2)
@@ -242,10 +204,7 @@ fn threaded_hotpath_validation() {
             done,
         };
         let mut feeds = Vec::with_capacity(2);
-        #[cfg(feature = "bench-deferred-logs")]
         let mut reporter = logging::decision_reporter().unwrap();
-        #[cfg(not(feature = "bench-deferred-logs"))]
-        let mut reporter = logging::decision_reporter();
         let mut previous = Bias::Hold;
         runtime
             .block_on(service::run(

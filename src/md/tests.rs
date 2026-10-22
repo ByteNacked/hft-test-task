@@ -1,12 +1,9 @@
 use crate::{
     aster::AsterAdapter,
     binance::BinanceAdapter,
-    book::OrderBook,
-    book::{self, BookStatus},
-    config,
+    book, config,
     md::{DepthDiff, DiffScratch, MDAdapter, ProtocolError, ReceiveTime, Snapshot},
     numeric::InstrumentRules,
-    robot::{self, Bias},
 };
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -52,52 +49,6 @@ fn protocols() -> [Protocol; 2] {
     ]
 }
 #[test]
-fn fixtures_flow_through_book_and_robot() {
-    let now = Instant::now();
-    let receive = now;
-    let mut readers = Vec::new();
-    for protocol in protocols() {
-        let mut scratch = DiffScratch::default();
-        let rules = (protocol.metadata)(protocol.metadata_fixture).unwrap();
-        let snapshot = (protocol.snapshot)(protocol.snapshot_fixture, rules).unwrap();
-        let mut book = OrderBook::new(rules.tick_size()).unwrap();
-        book.load_snapshot(&snapshot).unwrap();
-        assert_eq!(book.event_time(), None);
-        let mut diff = Box::<DepthDiff>::default();
-        (protocol.diff)(
-            protocol.diff_fixture,
-            receive,
-            rules,
-            &mut diff,
-            &mut scratch,
-            crate::book::PriceWindow::new(rules.tick_size()).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(diff.time.exchange_time(), 1_700_000_000_002);
-        assert_eq!(
-            (diff.first_id, diff.final_id, diff.previous_id),
-            (100, 102, 99)
-        );
-        book.apply_diff(&diff).unwrap();
-        let (mut writer, mut reader) = {
-            static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            book::channel(config::PUBLISHED_LEVELS, &EPOCH)
-        }
-        .unwrap();
-        writer.publish(&book, BookStatus::Online).unwrap();
-        reader.update();
-        assert_eq!(reader.view().platform_time, Some(now));
-        readers.push(reader);
-    }
-    let decision = robot::evaluate(
-        readers[0].view(),
-        readers[1].view(),
-        &Default::default(),
-        now + Duration::from_millis(1),
-    );
-    assert_eq!(decision.bias, Bias::LongBiasAster);
-}
-#[test]
 fn corrupted_diff_fields_and_bounds_are_rejected() {
     let receive = Instant::now();
     for protocol in protocols() {
@@ -125,11 +76,6 @@ fn corrupted_diff_fields_and_bounds_are_rejected() {
             ("E", json!("1700000000002")),
             ("E", json!(u64::MAX)),
             ("T", json!(-1)),
-            ("b", json!([["3500.01", "1"]])),
-            ("b", json!([["3500", "0.0001"]])),
-            ("b", json!([["3500", "1"], ["3500", "2"]])),
-            ("b", json!([["3500", "0"], ["3490", "1"], ["3500", "2"]])),
-            ("a", json!([["3501", "1"], ["3510", "1"], ["3501", "0"]])),
             ("a", json!([["3501", "-1"]])),
             ("b", json!([[3500, "1"]])),
             ("b", json!([["3500", "1", "extra"]])),

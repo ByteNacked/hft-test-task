@@ -75,7 +75,7 @@ impl Decision {
     }
 }
 
-pub fn evaluate(
+pub(crate) fn evaluate(
     binance: &BookView,
     aster: &BookView,
     config: &RobotConfig,
